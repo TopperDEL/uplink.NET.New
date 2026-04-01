@@ -30,6 +30,28 @@ internal static unsafe partial class UplinkInterop
         public nint temp_directory;           // char* – targets uplink-c >= 1.0 (see uplink.h UplinkConfig)
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct UplinkPermission
+    {
+        [MarshalAs(UnmanagedType.I1)]
+        public bool allow_download;
+        [MarshalAs(UnmanagedType.I1)]
+        public bool allow_upload;
+        [MarshalAs(UnmanagedType.I1)]
+        public bool allow_list;
+        [MarshalAs(UnmanagedType.I1)]
+        public bool allow_delete;
+        public long not_before; // int64_t unix timestamp, 0 = disabled
+        public long not_after;  // int64_t unix timestamp, 0 = disabled
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct UplinkSharePrefix
+    {
+        public nint bucket; // char*
+        public nint prefix; // char*
+    }
+
     // ── Bucket ───────────────────────────────────────────────────────────────
     [StructLayout(LayoutKind.Sequential)]
     internal struct UplinkBucket
@@ -200,6 +222,13 @@ internal static unsafe partial class UplinkInterop
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    internal struct UplinkStringResult
+    {
+        public nint string_; // char*
+        public nint error;   // UplinkError*
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     internal struct UplinkObjectResult
     {
         public nint object_; // UplinkObject* (field named 'object' in C, reserved word in C#)
@@ -245,6 +274,19 @@ internal static unsafe partial class UplinkInterop
     [LibraryImport(LibName)]
     internal static partial void uplink_free_access_result(UplinkAccessResult result);
 
+    [LibraryImport(LibName)]
+    internal static partial UplinkStringResult uplink_access_serialize(nint access);
+
+    [LibraryImport(LibName)]
+    internal static partial UplinkAccessResult uplink_access_share(
+        nint access,
+        UplinkPermission permission,
+        UplinkSharePrefix* prefixes,
+        int prefixes_count);
+
+    [LibraryImport(LibName)]
+    internal static partial void uplink_free_string_result(UplinkStringResult result);
+
     // ── Project ───────────────────────────────────────────────────────────────
     [LibraryImport(LibName)]
     internal static partial UplinkProjectResult uplink_config_open_project(UplinkConfig config, nint access);
@@ -254,6 +296,9 @@ internal static unsafe partial class UplinkInterop
 
     [LibraryImport(LibName)]
     internal static partial nint uplink_close_project(nint project); // returns UplinkError*
+
+    [LibraryImport(LibName)]
+    internal static partial nint uplink_revoke_access(nint project, nint access); // returns UplinkError*
 
     [LibraryImport(LibName)]
     internal static partial void uplink_free_project_result(UplinkProjectResult result);
@@ -472,6 +517,12 @@ internal static unsafe partial class UplinkInterop
     {
         if (project != nint.Zero)
             uplink_free_project_result(new UplinkProjectResult { project = project, error = nint.Zero });
+    }
+
+    internal static void FreeAccessHandle(nint access)
+    {
+        if (access != nint.Zero)
+            uplink_free_access_result(new UplinkAccessResult { access = access, error = nint.Zero });
     }
 
     internal static void FreeUploadHandle(nint upload)
