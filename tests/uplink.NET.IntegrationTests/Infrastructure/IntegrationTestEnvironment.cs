@@ -4,7 +4,8 @@ namespace uplink.NET.IntegrationTests.Infrastructure;
 
 internal static class IntegrationTestEnvironment
 {
-    private const int PayloadPatternModulus = 251;
+    // Use a prime below 256 so the generated sequence cycles through a wide range of byte values.
+    private const int PrimeModulusForPayloadPattern = 251;
 
     public const string AccessGrantVariableName = "TEST_ACCESS_GRANT";
     public const string BucketVariableName = "TEST_BUCKET";
@@ -44,7 +45,7 @@ internal static class IntegrationTestEnvironment
 
         var payload = new byte[sizeInBytes];
         for (var index = 0; index < payload.Length; index++)
-            payload[index] = (byte)(index % PayloadPatternModulus);
+            payload[index] = (byte)(index % PrimeModulusForPayloadPattern);
 
         return payload;
     }
