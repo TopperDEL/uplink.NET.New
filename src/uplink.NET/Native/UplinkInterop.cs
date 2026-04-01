@@ -33,14 +33,10 @@ internal static unsafe partial class UplinkInterop
     [StructLayout(LayoutKind.Sequential)]
     internal struct UplinkPermission
     {
-        [MarshalAs(UnmanagedType.I1)]
-        public bool allow_download;
-        [MarshalAs(UnmanagedType.I1)]
-        public bool allow_upload;
-        [MarshalAs(UnmanagedType.I1)]
-        public bool allow_list;
-        [MarshalAs(UnmanagedType.I1)]
-        public bool allow_delete;
+        public byte allow_download;
+        public byte allow_upload;
+        public byte allow_list;
+        public byte allow_delete;
         public long not_before; // int64_t unix timestamp, 0 = disabled
         public long not_after;  // int64_t unix timestamp, 0 = disabled
     }

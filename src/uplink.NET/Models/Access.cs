@@ -133,10 +133,10 @@ public class Access : IDisposable
 
         var nativePermission = new UplinkInterop.UplinkPermission
         {
-            allow_download = permission.AllowDownload,
-            allow_upload = permission.AllowUpload,
-            allow_list = permission.AllowList,
-            allow_delete = permission.AllowDelete,
+            allow_download = permission.AllowDownload ? (byte)1 : (byte)0,
+            allow_upload = permission.AllowUpload ? (byte)1 : (byte)0,
+            allow_list = permission.AllowList ? (byte)1 : (byte)0,
+            allow_delete = permission.AllowDelete ? (byte)1 : (byte)0,
             not_before = UplinkInterop.DateTimeToUnix(permission.NotBefore),
             not_after = UplinkInterop.DateTimeToUnix(permission.NotAfter)
         };
