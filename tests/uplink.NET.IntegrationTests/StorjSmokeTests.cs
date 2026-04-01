@@ -1,5 +1,6 @@
 using uplink.NET.Exceptions;
 using uplink.NET.IntegrationTests.Infrastructure;
+using uplink.NET.Models;
 using uplink.NET.Services;
 
 namespace uplink.NET.IntegrationTests;
