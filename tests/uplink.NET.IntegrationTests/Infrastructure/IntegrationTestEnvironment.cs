@@ -4,6 +4,8 @@ namespace uplink.NET.IntegrationTests.Infrastructure;
 
 internal static class IntegrationTestEnvironment
 {
+    private const int PayloadPatternModulus = 251;
+
     public const string AccessGrantVariableName = "TEST_ACCESS_GRANT";
     public const string BucketVariableName = "TEST_BUCKET";
     public const int StorjInlinePlacementLimitBytes = 4 * 1024;
@@ -42,7 +44,7 @@ internal static class IntegrationTestEnvironment
 
         var payload = new byte[sizeInBytes];
         for (var index = 0; index < payload.Length; index++)
-            payload[index] = (byte)(index % 251);
+            payload[index] = (byte)(index % PayloadPatternModulus);
 
         return payload;
     }
