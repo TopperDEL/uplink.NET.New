@@ -74,4 +74,4 @@ else
   export "$library_path_name=$target_dir"
 fi
 
-DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 DOTNET_CLI_HOME=/tmp dotnet test "$TEST_PROJECT" -c Release
+DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 DOTNET_CLI_HOME=/tmp dotnet test "$REPO_ROOT/uplink.NET.sln" -c Release

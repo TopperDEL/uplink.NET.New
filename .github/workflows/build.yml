@@ -2,13 +2,11 @@ name: Build and Publish
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    tags:
+      - 'v*'
   release:
     types: [ published ]
 
-# Minimal default permissions for all jobs
 permissions:
   contents: read
 
@@ -59,7 +57,6 @@ jobs:
         with:
           name: native-linux-x64
           path: native/linux-x64/
-
 
   build-native-linux-arm64:
     name: Build native - Linux ARM64
@@ -127,33 +124,41 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Resolve package metadata from GitHub Release
+      - name: Resolve package metadata
         id: package_metadata
-        if: github.event_name == 'release'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const releaseResponse = await github.rest.repos.getRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: context.payload.release.id
-            });
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            tag_name="$RELEASE_TAG_NAME"
+            release_title="${RELEASE_NAME:-}"
+            release_body="${RELEASE_BODY:-}"
+          else
+            tag_name="$GITHUB_REF_NAME"
+            release_title=""
+            release_body=""
+          fi
 
-            const release = releaseResponse.data;
-            const tagName = release.tag_name ?? '';
-            const packageVersion = tagName.startsWith('v') ? tagName.slice(1).trim() : '';
+          if [[ -z "$tag_name" || ! "$tag_name" =~ ^v.+$ ]]; then
+            echo "Tag '$tag_name' must start with 'v', for example 'v1.0.0'." >&2
+            exit 1
+          fi
 
-            if (!tagName.startsWith('v') || packageVersion.length === 0) {
-              core.setFailed(`Release tag "${tagName}" must start with "v", for example "v1.0.0".`);
-              return;
-            }
+          package_version="${tag_name#v}"
+          printf 'package_version=%s\n' "$package_version" >> "$GITHUB_OUTPUT"
 
-            const releaseTitle = (release.name ?? '').trim();
-            const releaseBody = (release.body ?? '').trim();
-            const releaseNotes = [releaseTitle, releaseBody].filter(Boolean).join('\n\n');
-
-            core.setOutput('package_version', packageVersion);
-            core.setOutput('package_release_notes', releaseNotes);
+          if [[ -n "$release_title$release_body" ]]; then
+            {
+              echo 'package_release_notes<<EOF'
+              printf '%s\n\n%s\n' "$release_title" "$release_body"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Download all native artifacts
         uses: actions/download-artifact@v4.1.3
@@ -167,27 +172,52 @@ jobs:
           mkdir -p src/uplink.NET/runtimes/linux-arm64/native
           mkdir -p src/uplink.NET/runtimes/osx-x64/native
           mkdir -p src/uplink.NET/runtimes/osx-arm64/native
-          cp artifacts/native-win-x64/storj_uplink.dll          src/uplink.NET/runtimes/win-x64/native/
-          cp artifacts/native-linux-x64/libstorj_uplink.so      src/uplink.NET/runtimes/linux-x64/native/
-          cp artifacts/native-linux-arm64/libstorj_uplink.so    src/uplink.NET/runtimes/linux-arm64/native/
-          cp artifacts/native-osx-x64/libstorj_uplink.dylib     src/uplink.NET/runtimes/osx-x64/native/
-          cp artifacts/native-osx-arm64/libstorj_uplink.dylib   src/uplink.NET/runtimes/osx-arm64/native/
+          cp artifacts/native-win-x64/storj_uplink.dll        src/uplink.NET/runtimes/win-x64/native/
+          cp artifacts/native-linux-x64/libstorj_uplink.so    src/uplink.NET/runtimes/linux-x64/native/
+          cp artifacts/native-linux-arm64/libstorj_uplink.so  src/uplink.NET/runtimes/linux-arm64/native/
+          cp artifacts/native-osx-x64/libstorj_uplink.dylib   src/uplink.NET/runtimes/osx-x64/native/
+          cp artifacts/native-osx-arm64/libstorj_uplink.dylib src/uplink.NET/runtimes/osx-arm64/native/
 
       - name: Restore
-        run: dotnet restore src/uplink.NET/uplink.NET.csproj
+        run: dotnet restore uplink.NET.sln
 
       - name: Build
         shell: pwsh
         env:
           PACKAGE_VERSION: ${{ steps.package_metadata.outputs.package_version }}
         run: |
-          $buildArgs = @('build', 'src/uplink.NET/uplink.NET.csproj', '-c', 'Release', '--no-restore')
+          $buildArgs = @('build', 'uplink.NET.sln', '-c', 'Release', '--no-restore')
 
           if ($env:PACKAGE_VERSION) {
             $buildArgs += "-p:Version=$($env:PACKAGE_VERSION)"
           }
 
           & dotnet @buildArgs
+
+      - name: Detect integration test configuration
+        id: integration_test_config
+        shell: bash
+        env:
+          TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
+          TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+        run: |
+          if [[ -n "$TEST_ACCESS_GRANT" && -n "$TEST_BUCKET" ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run integration tests
+        if: steps.integration_test_config.outputs.enabled == 'true'
+        env:
+          TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
+          TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
+        run: dotnet test uplink.NET.sln -c Release --no-build
+
+      - name: Skip integration tests
+        if: steps.integration_test_config.outputs.enabled != 'true'
+        run: echo 'Skipping integration tests because TEST_ACCESS_GRANT and/or TEST_BUCKET are not configured.'
 
       - name: Pack NuGet package
         shell: pwsh
