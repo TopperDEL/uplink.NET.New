@@ -46,6 +46,11 @@ download.DownloadOperationEnded += op =>
     if (op.Completed)
         File.WriteAllBytes("downloaded.jpg", op.DownloadedBytes);
 };
+
+// Stream download
+using var stream = await objects.GetObjectAsStream(access, "my-bucket", "photos/photo.jpg");
+using var file = File.Create("downloaded-stream.jpg");
+await stream.CopyToAsync(file);
 ```
 
 ## Project structure

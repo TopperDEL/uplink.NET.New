@@ -1,5 +1,6 @@
 using uplink.NET.Exceptions;
 using uplink.NET.IntegrationTests.Infrastructure;
+using uplink.NET.Models;
 using uplink.NET.Services;
 
 namespace uplink.NET.IntegrationTests;
@@ -53,5 +54,65 @@ public class StorjSmokeTests
         }
 
         await Assert.ThrowsAsync<ObjectNotFoundException>(() => objectService.GetObjectAsync(context.Access, context.BucketName, objectKey));
+    }
+
+    [StorjIntegrationFact]
+    public async Task GetObjectAsStream_downloads_stream_without_buffering_the_operation()
+    {
+        using var context = IntegrationTestEnvironment.CreateContext();
+        var bucketService = new BucketService(context.Access);
+        var objectService = new ObjectService(context.Access);
+        var objectKey = $"integration-tests/{Guid.NewGuid():N}.bin";
+        var payload = Enumerable.Range(0, 200_000)
+            .Select(index => (byte)(index % 251))
+            .ToArray();
+
+        try
+        {
+            await bucketService.EnsureBucketAsync(context.BucketName);
+
+            var upload = await objectService.UploadObjectAsync(context.Access, context.BucketName, objectKey, payload, startImmediately: false);
+            var uploadTask = upload.StartUploadAsync();
+            Assert.NotNull(uploadTask);
+            await uploadTask;
+            Assert.True(upload.Completed);
+
+            using var fullStream = await objectService.GetObjectAsStream(context.Access, context.BucketName, objectKey);
+            using var fullResult = new MemoryStream();
+            var buffer = new byte[4096];
+
+            int bytesRead;
+            while ((bytesRead = await fullStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                fullResult.Write(buffer, 0, bytesRead);
+
+            Assert.Equal(payload.Length, fullStream.Length);
+            Assert.Equal(payload.Length, fullStream.Position);
+            Assert.Equal(payload, fullResult.ToArray());
+
+            using var rangeStream = await objectService.GetObjectAsStream(
+                context.Access,
+                context.BucketName,
+                objectKey,
+                new DownloadOptions
+                {
+                    Offset = 1234,
+                    Length = 4096
+                });
+            using var rangeResult = new MemoryStream();
+            await rangeStream.CopyToAsync(rangeResult);
+
+            Assert.Equal(4096, rangeStream.Length);
+            Assert.Equal(payload.Skip(1234).Take(4096).ToArray(), rangeResult.ToArray());
+        }
+        finally
+        {
+            try
+            {
+                await objectService.DeleteObjectAsync(context.Access, context.BucketName, objectKey);
+            }
+            catch (ObjectNotFoundException)
+            {
+            }
+        }
     }
 }

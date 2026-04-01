@@ -203,6 +203,40 @@ public class ObjectService : IObjectService
         });
     }
 
+    public Task<DownloadStream> GetObjectAsStream(
+        Access access,
+        string bucketName,
+        string key)
+        => GetObjectAsStream(access, bucketName, key, new DownloadOptions());
+
+    public Task<DownloadStream> GetObjectAsStream(
+        Access access,
+        string bucketName,
+        string key,
+        DownloadOptions downloadOptions)
+    {
+        return Task.Run(() =>
+        {
+            var handle = nint.Zero;
+            try
+            {
+                handle = OpenDownloadHandle(access._projectHandle, bucketName, key, downloadOptions);
+                var length = GetDownloadLength(handle, downloadOptions);
+                var stream = new DownloadStream(handle, length);
+                handle = nint.Zero;
+                return stream;
+            }
+            finally
+            {
+                if (handle != nint.Zero)
+                {
+                    UplinkInterop.CloseDownloadHandle(handle);
+                    UplinkInterop.FreeDownloadHandle(handle);
+                }
+            }
+        });
+    }
+
     // ── Download ──────────────────────────────────────────────────────────────
 
     public Task<DownloadOperation> DownloadObjectAsync(
@@ -276,5 +310,73 @@ public class ObjectService : IObjectService
             Marshal.FreeCoTaskMem(e.key);
             Marshal.FreeCoTaskMem(e.value);
         }
+    }
+
+    private static unsafe nint OpenDownloadHandle(
+        nint projectHandle,
+        string bucketName,
+        string key,
+        DownloadOptions downloadOptions)
+    {
+        var opts = new UplinkInterop.UplinkDownloadOptions
+        {
+            offset = downloadOptions.Offset,
+            length = downloadOptions.Length
+        };
+
+        var result = UplinkInterop.uplink_download_object(
+            projectHandle,
+            bucketName,
+            key,
+            &opts);
+
+        if (result.error != nint.Zero)
+        {
+            var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+            UplinkInterop.uplink_free_download_result(result);
+            throw new ObjectNotFoundException(key, msg);
+        }
+
+        return result.download;
+    }
+
+    private static long GetDownloadLength(
+        nint downloadHandle,
+        DownloadOptions downloadOptions)
+    {
+        var infoResult = UplinkInterop.uplink_download_info(downloadHandle);
+        try
+        {
+            if (infoResult.error != nint.Zero)
+            {
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref infoResult.error);
+                throw new IOException($"Failed to inspect Storj download stream: {msg}");
+            }
+
+            if (infoResult.object_ == nint.Zero)
+                return 0;
+
+            var contentLength = UplinkInterop.MarshalObject(infoResult.object_).ContentLength;
+            return CalculateDownloadLength(contentLength, downloadOptions);
+        }
+        finally
+        {
+            UplinkInterop.uplink_free_object_result(infoResult);
+        }
+    }
+
+    private static long CalculateDownloadLength(
+        long contentLength,
+        DownloadOptions downloadOptions)
+    {
+        var offset = Math.Max(0, downloadOptions.Offset);
+        if (contentLength <= offset)
+            return 0;
+
+        var remainingLength = contentLength - offset;
+        if (downloadOptions.Length < 0)
+            return remainingLength;
+
+        return Math.Min(remainingLength, downloadOptions.Length);
     }
 }

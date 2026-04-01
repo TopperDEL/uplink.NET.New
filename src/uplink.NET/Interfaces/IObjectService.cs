@@ -24,6 +24,8 @@ public interface IObjectService
 
     // ── Stat ──────────────────────────────────────────────────────────────────
     Task<StorjObject> GetObjectAsync(Access access, string bucketName, string key);
+    Task<DownloadStream> GetObjectAsStream(Access access, string bucketName, string key);
+    Task<DownloadStream> GetObjectAsStream(Access access, string bucketName, string key, DownloadOptions downloadOptions);
 
     // ── Download ──────────────────────────────────────────────────────────────
     Task<DownloadOperation> DownloadObjectAsync(Access access, string bucketName, string key, bool startImmediately);

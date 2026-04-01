@@ -1,0 +1,183 @@
+using System.IO;
+using uplink.NET.Native;
+
+namespace uplink.NET.Models;
+
+/// <summary>
+/// Represents a readable stream backed by a native Storj download handle.
+/// </summary>
+public class DownloadStream : Stream
+{
+    private readonly object _syncRoot = new();
+
+    private nint _downloadHandle;
+    private readonly long _length;
+    private long _position;
+    private bool _disposed;
+    private bool _endOfStream;
+
+    internal DownloadStream(nint downloadHandle, long length)
+    {
+        if (downloadHandle == nint.Zero)
+            throw new ArgumentException("A valid native download handle is required.", nameof(downloadHandle));
+
+        _downloadHandle = downloadHandle;
+        _length = Math.Max(0, length);
+    }
+
+    public override bool CanRead => !_disposed;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+
+    public override long Length
+    {
+        get
+        {
+            lock (_syncRoot)
+            {
+                ThrowIfDisposed();
+                return _length;
+            }
+        }
+    }
+
+    public override long Position
+    {
+        get
+        {
+            lock (_syncRoot)
+            {
+                ThrowIfDisposed();
+                return _position;
+            }
+        }
+        set => throw new NotSupportedException("Seeking is not supported.");
+    }
+
+    public override void Flush()
+    {
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+
+        if (buffer.Length - offset < count)
+            throw new ArgumentException("The buffer is too small for the requested offset and count.", nameof(buffer));
+
+        return Read(buffer.AsSpan(offset, count));
+    }
+
+    public override int Read(Span<byte> buffer)
+    {
+        if (buffer.Length == 0)
+            return 0;
+
+        lock (_syncRoot)
+        {
+            ThrowIfDisposed();
+
+            if (_endOfStream)
+                return 0;
+
+            var (bytesRead, eof, error) = ReadChunk(_downloadHandle, buffer);
+            if (error != null)
+                throw new IOException($"Failed to read from Storj download stream: {error}");
+
+            if (bytesRead > 0)
+                _position += bytesRead;
+
+            if (eof || bytesRead == 0)
+                _endOfStream = true;
+
+            return bytesRead;
+        }
+    }
+
+    public override ValueTask<int> ReadAsync(
+        Memory<byte> buffer,
+        CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return ValueTask.FromCanceled<int>(cancellationToken);
+
+        try
+        {
+            return ValueTask.FromResult(Read(buffer.Span));
+        }
+        catch (Exception ex)
+        {
+            return ValueTask.FromException<int>(ex);
+        }
+    }
+
+    public override Task<int> ReadAsync(
+        byte[] buffer,
+        int offset,
+        int count,
+        CancellationToken cancellationToken)
+        => ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
+
+    public override long Seek(long offset, SeekOrigin origin)
+        => throw new NotSupportedException("Seeking is not supported.");
+
+    public override void SetLength(long value)
+        => throw new NotSupportedException("Writing is not supported.");
+
+    public override void Write(byte[] buffer, int offset, int count)
+        => throw new NotSupportedException("Writing is not supported.");
+
+    protected override void Dispose(bool disposing)
+    {
+        lock (_syncRoot)
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+
+            if (_downloadHandle != nint.Zero)
+            {
+                UplinkInterop.CloseDownloadHandle(_downloadHandle);
+                UplinkInterop.FreeDownloadHandle(_downloadHandle);
+                _downloadHandle = nint.Zero;
+            }
+        }
+
+        base.Dispose(disposing);
+    }
+
+    ~DownloadStream() => Dispose(false);
+
+    private void ThrowIfDisposed()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
+    private static unsafe (int bytesRead, bool eof, string? error) ReadChunk(
+        nint handle,
+        Span<byte> buffer)
+    {
+        UplinkInterop.UplinkReadResult readResult;
+        fixed (byte* bufPtr = buffer)
+        {
+            readResult = UplinkInterop.uplink_download_read(
+                handle,
+                bufPtr,
+                (nuint)buffer.Length);
+        }
+
+        int bytesRead = (int)(nuint)readResult.bytes_read;
+        if (readResult.error != nint.Zero)
+        {
+            var (msg, code) = UplinkInterop.ConsumeError(readResult.error);
+            bool isEof = code == UplinkInterop.EndOfFileErrorCode
+                || msg.Contains("EOF", StringComparison.OrdinalIgnoreCase);
+            return (bytesRead, isEof, isEof ? null : msg);
+        }
+
+        return (bytesRead, bytesRead == 0, null);
+    }
+}
