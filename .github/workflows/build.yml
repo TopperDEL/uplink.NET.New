@@ -44,17 +44,6 @@ jobs:
         with:
           go-version: '1.22'
       - uses: mlugg/setup-zig@v2
-      - name: Build uplink-c
-        run: |
-          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
-          cd $HOME/uplink-c
-          make build
-          mkdir -p "$GITHUB_WORKSPACE/native/linux-x64"
-          cp .build/libuplink.so "$GITHUB_WORKSPACE/native/linux-x64/libstorj_uplink.so"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: native-linux-x64
-          path: native/linux-x64/
       - name: Test Windows cross-compile
         run: |
             git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
@@ -67,6 +56,18 @@ jobs:
 
             make build
             file .build/*
+      - name: Build uplink-c
+        run: |
+          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          cd $HOME/uplink-c
+          make build
+          mkdir -p "$GITHUB_WORKSPACE/native/linux-x64"
+          cp .build/libuplink.so "$GITHUB_WORKSPACE/native/linux-x64/libstorj_uplink.so"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-x64
+          path: native/linux-x64/
+
 
   build-native-linux-arm64:
     name: Build native - Linux ARM64
