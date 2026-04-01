@@ -23,6 +23,7 @@ jobs:
           go-version: '1.22'
       - uses: mlugg/setup-zig@v2
       - name: Build uplink-c
+        shell: bash
         run: |
           git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
           cd $HOME/uplink-c
