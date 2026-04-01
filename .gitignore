@@ -1,0 +1,22 @@
+# Build artifacts
+bin/
+obj/
+*.user
+.vs/
+.idea/
+*.suo
+
+# NuGet
+*.nupkg
+*.snupkg
+nupkgs/
+
+# Native binaries (built by CI)
+src/uplink.NET/runtimes/
+
+# Test results
+TestResults/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>uplink.NET</AssemblyName>
+    <RootNamespace>uplink.NET</RootNamespace>
+    <Version>1.0.0</Version>
+    <Authors>TopperDEL</Authors>
+    <Description>.NET 10+ wrapper around the storj/uplink-c library for accessing the Storj decentralized cloud storage network.</Description>
+    <PackageTags>storj uplink decentralized cloud storage</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Include native runtimes in NuGet package -->
+    <Content Include="runtimes\**" Pack="true" PackagePath="runtimes\" Condition="Exists('runtimes\')" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="sqlite-net-pcl" Version="1.9.172" />
+    <PackageReference Include="SQLitePCLRaw.bundle_green" Version="2.1.10" />
+  </ItemGroup>
+</Project>
