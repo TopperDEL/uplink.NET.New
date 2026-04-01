@@ -4,23 +4,21 @@ namespace uplink.NET.Native;
 
 /// <summary>
 /// P/Invoke declarations for the storj/uplink-c native library.
-/// All handle types in C (uint64_t _handle) are represented as UplinkHandle.
+/// Opaque native handles are represented as nint pointers to uplink-c wrapper structs.
 /// Pointer fields in result/object structs are represented as nint.
 /// </summary>
 internal static unsafe partial class UplinkInterop
 {
     private const string LibName = "storj_uplink";
-
-    // ── Opaque handle (all C handle structs contain a single uint64_t) ──────
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct UplinkHandle { public ulong _handle; }
+    internal const int EndOfFileErrorCode = -1;
 
     // ── Error ────────────────────────────────────────────────────────────────
     [StructLayout(LayoutKind.Sequential)]
     internal struct UplinkError
     {
+        // uplink-c defines UplinkError as { int32_t code; char* message; }.
+        public int  code;
         public nint message; // char*
-        public uint code;
     }
 
     // ── Config ───────────────────────────────────────────────────────────────
@@ -162,8 +160,8 @@ internal static unsafe partial class UplinkInterop
     [StructLayout(LayoutKind.Sequential)]
     internal struct UplinkProjectResult
     {
-        public UplinkHandle project; // UplinkProject by value
-        public nint         error;   // UplinkError*
+        public nint project; // UplinkProject*
+        public nint error;   // UplinkError*
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -176,15 +174,15 @@ internal static unsafe partial class UplinkInterop
     [StructLayout(LayoutKind.Sequential)]
     internal struct UplinkUploadResult
     {
-        public UplinkHandle upload; // UplinkUpload by value
-        public nint         error;  // UplinkError*
+        public nint upload; // UplinkUpload*
+        public nint error;  // UplinkError*
     }
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct UplinkDownloadResult
     {
-        public UplinkHandle download; // UplinkDownload by value
-        public nint         error;    // UplinkError*
+        public nint download; // UplinkDownload*
+        public nint error;    // UplinkError*
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -225,8 +223,8 @@ internal static unsafe partial class UplinkInterop
     [StructLayout(LayoutKind.Sequential)]
     internal struct UplinkPartUploadResult
     {
-        public UplinkHandle part_upload; // UplinkPartUpload by value
-        public nint         error;       // UplinkError*
+        public nint part_upload; // UplinkPartUpload*
+        public nint error;       // UplinkError*
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -249,35 +247,35 @@ internal static unsafe partial class UplinkInterop
 
     // ── Project ───────────────────────────────────────────────────────────────
     [LibraryImport(LibName)]
-    internal static partial UplinkProjectResult uplink_config_open_project(UplinkConfig config, UplinkHandle access);
+    internal static partial UplinkProjectResult uplink_config_open_project(UplinkConfig config, nint access);
 
     [LibraryImport(LibName)]
-    internal static partial UplinkProjectResult uplink_open_project(UplinkHandle access);
+    internal static partial UplinkProjectResult uplink_open_project(nint access);
 
     [LibraryImport(LibName)]
-    internal static partial nint uplink_close_project(UplinkHandle project); // returns UplinkError*
+    internal static partial nint uplink_close_project(nint project); // returns UplinkError*
 
     [LibraryImport(LibName)]
     internal static partial void uplink_free_project_result(UplinkProjectResult result);
 
     // ── Bucket ────────────────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkBucketResult uplink_create_bucket(UplinkHandle project, string name);
+    internal static partial UplinkBucketResult uplink_create_bucket(nint project, string name);
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkBucketResult uplink_ensure_bucket(UplinkHandle project, string name);
+    internal static partial UplinkBucketResult uplink_ensure_bucket(nint project, string name);
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkBucketResult uplink_stat_bucket(UplinkHandle project, string name);
+    internal static partial UplinkBucketResult uplink_stat_bucket(nint project, string name);
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkBucketResult uplink_delete_bucket(UplinkHandle project, string name);
+    internal static partial UplinkBucketResult uplink_delete_bucket(nint project, string name);
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkBucketResult uplink_delete_bucket_with_objects(UplinkHandle project, string name);
+    internal static partial UplinkBucketResult uplink_delete_bucket_with_objects(nint project, string name);
 
     [LibraryImport(LibName)]
-    internal static partial nint uplink_list_buckets(UplinkHandle project, UplinkListBucketsOptions* options); // returns UplinkBucketIterator*
+    internal static partial nint uplink_list_buckets(nint project, UplinkListBucketsOptions* options); // returns UplinkBucketIterator*
 
     [LibraryImport(LibName)]
     [return: MarshalAs(UnmanagedType.I1)]
@@ -297,48 +295,48 @@ internal static unsafe partial class UplinkInterop
 
     // ── Upload ────────────────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkUploadResult uplink_upload_object(UplinkHandle project, string bucket, string key, UplinkUploadOptions* options);
+    internal static partial UplinkUploadResult uplink_upload_object(nint project, string bucket, string key, UplinkUploadOptions* options);
 
     [LibraryImport(LibName)]
-    internal static partial UplinkWriteResult uplink_upload_write(UplinkHandle upload, void* bytes, nuint length);
+    internal static partial UplinkWriteResult uplink_upload_write(nint upload, void* bytes, nuint length);
 
     [LibraryImport(LibName)]
-    internal static partial nint uplink_upload_commit(UplinkHandle upload); // returns UplinkError*
+    internal static partial nint uplink_upload_commit(nint upload); // returns UplinkError*
 
     [LibraryImport(LibName)]
-    internal static partial nint uplink_upload_abort(UplinkHandle upload); // returns UplinkError*
+    internal static partial nint uplink_upload_abort(nint upload); // returns UplinkError*
 
     [LibraryImport(LibName)]
-    internal static partial nint uplink_upload_set_custom_metadata(UplinkHandle upload, UplinkCustomMetadata metadata); // returns UplinkError*
+    internal static partial nint uplink_upload_set_custom_metadata(nint upload, UplinkCustomMetadata metadata); // returns UplinkError*
 
     [LibraryImport(LibName)]
-    internal static partial UplinkObjectResult uplink_upload_info(UplinkHandle upload);
+    internal static partial UplinkObjectResult uplink_upload_info(nint upload);
 
     [LibraryImport(LibName)]
     internal static partial void uplink_free_upload_result(UplinkUploadResult result);
 
     // ── Download ──────────────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkDownloadResult uplink_download_object(UplinkHandle project, string bucket, string key, UplinkDownloadOptions* options);
+    internal static partial UplinkDownloadResult uplink_download_object(nint project, string bucket, string key, UplinkDownloadOptions* options);
 
     [LibraryImport(LibName)]
-    internal static partial UplinkReadResult uplink_download_read(UplinkHandle download, void* bytes, nuint length);
+    internal static partial UplinkReadResult uplink_download_read(nint download, void* bytes, nuint length);
 
     [LibraryImport(LibName)]
-    internal static partial nint uplink_close_download(UplinkHandle download); // returns UplinkError*
+    internal static partial nint uplink_close_download(nint download); // returns UplinkError*
 
     [LibraryImport(LibName)]
-    internal static partial UplinkObjectResult uplink_download_info(UplinkHandle download);
+    internal static partial UplinkObjectResult uplink_download_info(nint download);
 
     [LibraryImport(LibName)]
     internal static partial void uplink_free_download_result(UplinkDownloadResult result);
 
     // ── Object ────────────────────────────────────────────────────────────────
     [LibraryImport(LibName)]
-    internal static partial nint uplink_list_objects(UplinkHandle project, nint bucket, UplinkListObjectsOptions* options); // returns UplinkObjectIterator*
+    internal static partial nint uplink_list_objects(nint project, nint bucket, UplinkListObjectsOptions* options); // returns UplinkObjectIterator*
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial nint uplink_list_objects_utf8(UplinkHandle project, string bucket, UplinkListObjectsOptions* options); // helper overload
+    internal static partial nint uplink_list_objects_utf8(nint project, string bucket, UplinkListObjectsOptions* options); // helper overload
 
     [LibraryImport(LibName)]
     [return: MarshalAs(UnmanagedType.I1)]
@@ -354,38 +352,38 @@ internal static unsafe partial class UplinkInterop
     internal static partial void uplink_free_object_iterator(nint iterator);
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkObjectResult uplink_stat_object(UplinkHandle project, string bucket, string key);
+    internal static partial UplinkObjectResult uplink_stat_object(nint project, string bucket, string key);
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkObjectResult uplink_delete_object(UplinkHandle project, string bucket, string key);
+    internal static partial UplinkObjectResult uplink_delete_object(nint project, string bucket, string key);
 
     [LibraryImport(LibName)]
     internal static partial void uplink_free_object_result(UplinkObjectResult result);
 
     // ── Multipart upload ──────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkUploadInfoResult uplink_begin_upload(UplinkHandle project, string bucket, string key, UplinkUploadOptions* options);
+    internal static partial UplinkUploadInfoResult uplink_begin_upload(nint project, string bucket, string key, UplinkUploadOptions* options);
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkCommitUploadResult uplink_commit_upload(UplinkHandle project, string bucket, string key, string upload_id, UplinkCommitUploadOptions* options);
+    internal static partial UplinkCommitUploadResult uplink_commit_upload(nint project, string bucket, string key, string upload_id, UplinkCommitUploadOptions* options);
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial nint uplink_abort_upload(UplinkHandle project, string bucket, string key, string upload_id); // returns UplinkError*
+    internal static partial nint uplink_abort_upload(nint project, string bucket, string key, string upload_id); // returns UplinkError*
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial UplinkPartUploadResult uplink_upload_part(UplinkHandle project, string bucket, string key, string upload_id, uint part_number);
+    internal static partial UplinkPartUploadResult uplink_upload_part(nint project, string bucket, string key, string upload_id, uint part_number);
 
     [LibraryImport(LibName)]
-    internal static partial UplinkWriteResult uplink_part_upload_write(UplinkHandle part_upload, void* bytes, nuint length);
+    internal static partial UplinkWriteResult uplink_part_upload_write(nint part_upload, void* bytes, nuint length);
 
     [LibraryImport(LibName)]
-    internal static partial nint uplink_part_upload_commit(UplinkHandle part_upload); // returns UplinkError*
+    internal static partial nint uplink_part_upload_commit(nint part_upload); // returns UplinkError*
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial nint uplink_part_upload_set_etag(UplinkHandle part_upload, string etag); // returns UplinkError*
+    internal static partial nint uplink_part_upload_set_etag(nint part_upload, string etag); // returns UplinkError*
 
     [LibraryImport(LibName)]
-    internal static partial UplinkPartResult uplink_part_upload_info(UplinkHandle part_upload);
+    internal static partial UplinkPartResult uplink_part_upload_info(nint part_upload);
 
     [LibraryImport(LibName)]
     internal static partial void uplink_free_upload_info_result(UplinkUploadInfoResult result);
@@ -401,7 +399,7 @@ internal static unsafe partial class UplinkInterop
 
     // ── Upload iterator ──────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial nint uplink_list_uploads(UplinkHandle project, string bucket, UplinkListUploadsOptions* options); // returns UplinkUploadIterator*
+    internal static partial nint uplink_list_uploads(nint project, string bucket, UplinkListUploadsOptions* options); // returns UplinkUploadIterator*
 
     [LibraryImport(LibName)]
     [return: MarshalAs(UnmanagedType.I1)]
@@ -418,7 +416,7 @@ internal static unsafe partial class UplinkInterop
 
     // ── Part iterator ────────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial nint uplink_list_upload_parts(UplinkHandle project, string bucket, string key, string upload_id, UplinkListUploadPartsOptions* options); // returns UplinkPartIterator*
+    internal static partial nint uplink_list_upload_parts(nint project, string bucket, string key, string upload_id, UplinkListUploadPartsOptions* options); // returns UplinkPartIterator*
 
     [LibraryImport(LibName)]
     [return: MarshalAs(UnmanagedType.I1)]
@@ -439,7 +437,7 @@ internal static unsafe partial class UplinkInterop
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     /// <summary>Reads error message and code from a native UplinkError*, then frees it.</summary>
-    internal static (string message, uint code) ConsumeError(nint errorPtr)
+    internal static (string message, int code) ConsumeError(nint errorPtr)
     {
         if (errorPtr == nint.Zero)
             return (string.Empty, 0);
@@ -448,9 +446,33 @@ internal static unsafe partial class UplinkInterop
         string msg = err.message != nint.Zero
             ? Marshal.PtrToStringUTF8(err.message) ?? string.Empty
             : string.Empty;
-        uint code = err.code;
+        int code = err.code;
         uplink_free_error(errorPtr);
         return (msg, code);
+    }
+
+    internal static void FreeProjectHandle(nint project)
+    {
+        if (project != nint.Zero)
+            uplink_free_project_result(new UplinkProjectResult { project = project, error = nint.Zero });
+    }
+
+    internal static void FreeUploadHandle(nint upload)
+    {
+        if (upload != nint.Zero)
+            uplink_free_upload_result(new UplinkUploadResult { upload = upload, error = nint.Zero });
+    }
+
+    internal static void FreeDownloadHandle(nint download)
+    {
+        if (download != nint.Zero)
+            uplink_free_download_result(new UplinkDownloadResult { download = download, error = nint.Zero });
+    }
+
+    internal static void FreePartUploadHandle(nint partUpload)
+    {
+        if (partUpload != nint.Zero)
+            uplink_free_part_upload_result(new UplinkPartUploadResult { part_upload = partUpload, error = nint.Zero });
     }
 
     /// <summary>Reads a UTF-8 string from a native char*.</summary>

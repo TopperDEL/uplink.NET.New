@@ -107,12 +107,10 @@ public class ObjectService : IObjectService
         if (uploadResult.error != nint.Zero)
         {
             var (msg, _) = UplinkInterop.ConsumeError(uploadResult.error);
-            UplinkInterop.uplink_free_upload_result(uploadResult);
             throw new Exception($"Failed to begin upload: {msg}");
         }
 
         var uploadHandle = uploadResult.upload;
-        UplinkInterop.uplink_free_upload_result(uploadResult);
 
         // Set custom metadata if supplied
         if (customMetadata?.Entries.Count > 0)
@@ -248,7 +246,7 @@ public class ObjectService : IObjectService
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static unsafe void SetCustomMetadataNative(
-        UplinkInterop.UplinkHandle uploadHandle, CustomMetadata metadata)
+        nint uploadHandle, CustomMetadata metadata)
     {
         var entries = metadata.Entries
             .Select(kv => new UplinkInterop.UplinkCustomMetadataEntry

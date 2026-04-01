@@ -144,36 +144,39 @@ public class MultipartUploadService : IMultipartUploadService
             if (partResult.error != nint.Zero)
             {
                 var (msg, _) = UplinkInterop.ConsumeError(partResult.error);
-                UplinkInterop.uplink_free_part_upload_result(partResult);
                 throw new MultipartUploadFailedException(msg);
             }
 
             var partHandle = partResult.part_upload;
-            UplinkInterop.uplink_free_part_upload_result(partResult);
-
             var uploadResult = new PartUploadResult();
-
-            var writeResult = UplinkInterop.WithPinnedBuffer(
-                partBytes, 0, partBytes.Length,
-                (ptr, len) => UplinkInterop.uplink_part_upload_write(partHandle, (void*)ptr, len));
-
-            if (writeResult.error != nint.Zero)
+            try
             {
-                var (msg, _) = UplinkInterop.ConsumeError(writeResult.error);
-                uploadResult.Error = msg;
+                var writeResult = UplinkInterop.WithPinnedBuffer(
+                    partBytes, 0, partBytes.Length,
+                    (ptr, len) => UplinkInterop.uplink_part_upload_write(partHandle, (void*)ptr, len));
+
+                if (writeResult.error != nint.Zero)
+                {
+                    var (msg, _) = UplinkInterop.ConsumeError(writeResult.error);
+                    uploadResult.Error = msg;
+                    return uploadResult;
+                }
+
+                uploadResult.BytesWritten = (uint)(nuint)writeResult.bytes_written;
+
+                var commitErr = UplinkInterop.uplink_part_upload_commit(partHandle);
+                if (commitErr != nint.Zero)
+                {
+                    var (msg, _) = UplinkInterop.ConsumeError(commitErr);
+                    uploadResult.Error = msg;
+                }
+
                 return uploadResult;
             }
-
-            uploadResult.BytesWritten = (uint)(nuint)writeResult.bytes_written;
-
-            var commitErr = UplinkInterop.uplink_part_upload_commit(partHandle);
-            if (commitErr != nint.Zero)
+            finally
             {
-                var (msg, _) = UplinkInterop.ConsumeError(commitErr);
-                uploadResult.Error = msg;
+                UplinkInterop.FreePartUploadHandle(partHandle);
             }
-
-            return uploadResult;
         });
     }
 

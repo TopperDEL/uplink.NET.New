@@ -14,7 +14,7 @@ public class UploadOperation : IDisposable
 {
     private const int ChunkSize = 80 * 1024; // 80 KB
 
-    private readonly UplinkInterop.UplinkHandle _projectHandle;
+    private readonly nint _projectHandle;
     private readonly string _bucketName;
     private readonly byte[] _data;
     private readonly UplinkOptions _nativeOptions;
@@ -40,7 +40,7 @@ public class UploadOperation : IDisposable
     internal record UplinkOptions(long Expires);
 
     internal UploadOperation(
-        UplinkInterop.UplinkHandle projectHandle,
+        nint projectHandle,
         string bucketName,
         string objectName,
         byte[] data,
@@ -119,9 +119,13 @@ public class UploadOperation : IDisposable
             AbortNativeUpload(uploadHandle);
             SetFailed(ex.Message);
         }
+        finally
+        {
+            UplinkInterop.FreeUploadHandle(uploadHandle);
+        }
     }
 
-    private unsafe (UplinkInterop.UplinkHandle handle, string? error) BeginNativeUpload()
+    private unsafe (nint handle, string? error) BeginNativeUpload()
     {
         var opts = new UplinkInterop.UplinkUploadOptions { expires = _nativeOptions.Expires };
         var result = UplinkInterop.uplink_upload_object(
@@ -129,16 +133,13 @@ public class UploadOperation : IDisposable
         if (result.error != nint.Zero)
         {
             var (msg, _) = UplinkInterop.ConsumeError(result.error);
-            UplinkInterop.uplink_free_upload_result(result);
-            return (default, msg);
+            return (nint.Zero, msg);
         }
-        var handle = result.upload;
-        UplinkInterop.uplink_free_upload_result(result);
-        return (handle, null);
+        return (result.upload, null);
     }
 
     private unsafe (uint written, string? error) WriteChunk(
-        UplinkInterop.UplinkHandle handle, int offset, int count)
+        nint handle, int offset, int count)
     {
         var writeResult = UplinkInterop.WithPinnedBuffer(
             _data, offset, count,
@@ -151,13 +152,13 @@ public class UploadOperation : IDisposable
         return ((uint)(nuint)writeResult.bytes_written, null);
     }
 
-    private static void AbortNativeUpload(UplinkInterop.UplinkHandle handle)
+    private static void AbortNativeUpload(nint handle)
     {
         var errPtr = UplinkInterop.uplink_upload_abort(handle);
         if (errPtr != nint.Zero) UplinkInterop.uplink_free_error(errPtr);
     }
 
-    private static string? CommitNativeUpload(UplinkInterop.UplinkHandle handle)
+    private static string? CommitNativeUpload(nint handle)
     {
         var errPtr = UplinkInterop.uplink_upload_commit(handle);
         if (errPtr != nint.Zero)
@@ -169,7 +170,7 @@ public class UploadOperation : IDisposable
     }
 
     private static unsafe void SetCustomMetadataNative(
-        UplinkInterop.UplinkHandle uploadHandle, CustomMetadata metadata)
+        nint uploadHandle, CustomMetadata metadata)
     {
         var entries = metadata.Entries
             .Select(kv => new UplinkInterop.UplinkCustomMetadataEntry

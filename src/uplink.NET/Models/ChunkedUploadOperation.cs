@@ -8,14 +8,15 @@ namespace uplink.NET.Models;
 /// </summary>
 public class ChunkedUploadOperation : IDisposable
 {
-    private readonly UplinkInterop.UplinkHandle _uploadHandle;
+    private nint _uploadHandle;
     private bool _committed;
+    private bool _disposed;
 
     public string ObjectName { get; }
     public bool Failed { get; private set; }
     public string? ErrorMessage { get; private set; }
 
-    internal ChunkedUploadOperation(UplinkInterop.UplinkHandle uploadHandle, string objectName)
+    internal ChunkedUploadOperation(nint uploadHandle, string objectName)
     {
         _uploadHandle = uploadHandle;
         ObjectName    = objectName;
@@ -51,6 +52,8 @@ public class ChunkedUploadOperation : IDisposable
     public async Task<bool> CommitAsync()
     {
         if (_committed) return true;
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
         await Task.Yield();
 
         var errPtr = UplinkInterop.uplink_upload_commit(_uploadHandle);
@@ -63,12 +66,15 @@ public class ChunkedUploadOperation : IDisposable
         }
 
         _committed = true;
+        ReleaseHandle();
         return true;
     }
 
     /// <summary>Aborts the upload, discarding all uploaded data.</summary>
     public async Task<bool> AbortAsync()
     {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
         await Task.Yield();
         var errPtr = UplinkInterop.uplink_upload_abort(_uploadHandle);
         if (errPtr != nint.Zero)
@@ -79,14 +85,44 @@ public class ChunkedUploadOperation : IDisposable
             return false;
         }
 
+        ReleaseHandle();
         return true;
     }
 
-    protected virtual void Dispose(bool disposing) { }
+    protected virtual void Dispose(bool disposing)
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        if (_uploadHandle != nint.Zero)
+        {
+            if (!_committed)
+            {
+                var errPtr = UplinkInterop.uplink_upload_abort(_uploadHandle);
+                if (errPtr != nint.Zero)
+                {
+                    var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                    Failed       = true;
+                    ErrorMessage = msg;
+                }
+            }
+
+            ReleaseHandle();
+        }
+    }
 
     public void Dispose()
     {
         Dispose(true);
         GC.SuppressFinalize(this);
+    }
+
+    private void ReleaseHandle()
+    {
+        if (_uploadHandle == nint.Zero)
+            return;
+
+        UplinkInterop.FreeUploadHandle(_uploadHandle);
+        _uploadHandle = nint.Zero;
     }
 }
