@@ -3,10 +3,10 @@ name: Build and Publish
 on:
   push:
     branches: [ main ]
-    tags:
-      - 'v*'
   pull_request:
     branches: [ main ]
+  release:
+    types: [ published ]
 
 # Minimal default permissions for all jobs
 permissions:
@@ -135,6 +135,34 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Resolve package metadata from GitHub Release
+        id: package_metadata
+        if: github.event_name == 'release'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const releaseResponse = await github.rest.repos.getRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: context.payload.release.id
+            });
+
+            const release = releaseResponse.data;
+            const tagName = release.tag_name ?? '';
+            const packageVersion = tagName.startsWith('v') ? tagName.slice(1).trim() : '';
+
+            if (!tagName.startsWith('v') || packageVersion.length === 0) {
+              core.setFailed(`Release tag "${tagName}" must start with "v", for example "v1.0.0".`);
+              return;
+            }
+
+            const releaseTitle = (release.name ?? '').trim();
+            const releaseBody = (release.body ?? '').trim();
+            const releaseNotes = [releaseTitle, releaseBody].filter(Boolean).join('\n\n');
+
+            core.setOutput('package_version', packageVersion);
+            core.setOutput('package_release_notes', releaseNotes);
+
       - name: Download all native artifacts
         uses: actions/download-artifact@v4.1.3
         with:
@@ -157,10 +185,35 @@ jobs:
         run: dotnet restore src/uplink.NET/uplink.NET.csproj
 
       - name: Build
-        run: dotnet build src/uplink.NET/uplink.NET.csproj -c Release --no-restore
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ steps.package_metadata.outputs.package_version }}
+        run: |
+          $buildArgs = @('build', 'src/uplink.NET/uplink.NET.csproj', '-c', 'Release', '--no-restore')
+
+          if ($env:PACKAGE_VERSION) {
+            $buildArgs += "-p:Version=$($env:PACKAGE_VERSION)"
+          }
+
+          & dotnet @buildArgs
 
       - name: Pack NuGet package
-        run: dotnet pack src/uplink.NET/uplink.NET.csproj -c Release --no-build -o nupkgs/
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ steps.package_metadata.outputs.package_version }}
+          PACKAGE_RELEASE_NOTES: ${{ steps.package_metadata.outputs.package_release_notes }}
+        run: |
+          $packArgs = @('pack', 'src/uplink.NET/uplink.NET.csproj', '-c', 'Release', '--no-build', '-o', 'nupkgs/')
+
+          if ($env:PACKAGE_VERSION) {
+            $packArgs += "-p:Version=$($env:PACKAGE_VERSION)"
+          }
+
+          if ($env:PACKAGE_RELEASE_NOTES) {
+            $packArgs += "-p:PackageReleaseNotes=$($env:PACKAGE_RELEASE_NOTES)"
+          }
+
+          & dotnet @packArgs
 
       - uses: actions/upload-artifact@v4
         with:
@@ -168,7 +221,7 @@ jobs:
           path: nupkgs/
 
       - name: Publish to NuGet.org
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'release'
         run: |
           dotnet nuget push nupkgs/*.nupkg \
             --api-key ${{ secrets.NUGET_API_KEY }} \
