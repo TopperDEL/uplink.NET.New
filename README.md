@@ -72,7 +72,7 @@ dotnet build src/uplink.NET/uplink.NET.csproj
 ## NuGet publishing
 
 The package metadata needed for NuGet.org is defined in
-`/home/runner/work/uplink.NET.New/uplink.NET.New/src/uplink.NET/uplink.NET.csproj`.
+`src/uplink.NET/uplink.NET.csproj`.
 That includes the package version, author, description, tags, license, README, and
 repository links.
 
@@ -102,8 +102,8 @@ dotnet nuget push nupkgs/*.nupkg \
 
 ### Publish with GitHub Actions
 
-The workflow in `/home/runner/work/uplink.NET.New/uplink.NET.New/.github/workflows/build.yml`
-will publish automatically when you push a tag matching `v*`.
+The workflow in `.github/workflows/build.yml` will publish automatically when you push
+a tag matching `v*`.
 
 Recommended release flow:
 
