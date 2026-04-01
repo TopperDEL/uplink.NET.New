@@ -108,9 +108,6 @@ public class Access : IDisposable
 
         if (_projectHandle != nint.Zero)
         {
-            var errPtr = UplinkInterop.uplink_close_project(_projectHandle);
-            if (errPtr != nint.Zero)
-                UplinkInterop.uplink_free_error(errPtr);
             UplinkInterop.FreeProjectHandle(_projectHandle);
             _projectHandle = nint.Zero;
         }

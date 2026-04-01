@@ -84,7 +84,6 @@ public class DownloadOperation : IDisposable
 
                 if (readError != null)
                 {
-                    CloseNativeDownload(downloadHandle);
                     SetFailed(readError);
                     return;
                 }
@@ -92,8 +91,6 @@ public class DownloadOperation : IDisposable
                 if (eof || bytesRead == 0)
                     break;
             }
-
-            CloseNativeDownload(downloadHandle);
 
             if (_cancelRequested)
             {
@@ -110,7 +107,6 @@ public class DownloadOperation : IDisposable
         }
         catch (Exception ex)
         {
-            CloseNativeDownload(downloadHandle);
             SetFailed(ex.Message);
         }
         finally
@@ -166,13 +162,6 @@ public class DownloadOperation : IDisposable
         }
         return (bytesRead, bytesRead == 0, null);
     }
-
-    private static void CloseNativeDownload(nint handle)
-    {
-        var errPtr = UplinkInterop.uplink_close_download(handle);
-        if (errPtr != nint.Zero) UplinkInterop.uplink_free_error(errPtr);
-    }
-
     private void SetFailed(string message)
     {
         Failed       = true;
