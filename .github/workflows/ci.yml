@@ -1,0 +1,59 @@
+name: Linux Integration Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test-linux:
+    name: Build Linux native runtime and run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - uses: mlugg/setup-zig@v2
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build uplink-c
+        run: |
+          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          cd $HOME/uplink-c
+          make build
+          mkdir -p "$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native"
+          cp .build/libuplink.so "$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native/libstorj_uplink.so"
+
+      - name: Restore
+        run: dotnet restore uplink.NET.sln
+
+      - name: Build
+        run: dotnet build uplink.NET.sln -c Release --no-restore
+
+      - name: Detect integration test configuration
+        id: integration_test_config
+        shell: bash
+        env:
+          TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
+          TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+        run: |
+          if [[ -n "$TEST_ACCESS_GRANT" && -n "$TEST_BUCKET" ]]; then
+            echo 'message=Integration secrets detected.' >> "$GITHUB_OUTPUT"
+          else
+            echo 'message=Integration secrets missing; Storj integration tests will be skipped by xUnit.' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Integration test configuration
+        run: echo "${{ steps.integration_test_config.outputs.message }}"
+
+      - name: Run test suite
+        env:
+          TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
+          TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
+        run: dotnet test uplink.NET.sln -c Release --no-build
