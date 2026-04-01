@@ -4,7 +4,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>uplink.NET</AssemblyName>
+    <AssemblyName>uplink.NET.new</AssemblyName>
     <RootNamespace>uplink.NET</RootNamespace>
     <Version>1.0.0</Version>
     <Authors>TopperDEL</Authors>
