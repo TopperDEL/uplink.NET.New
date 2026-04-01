@@ -2,6 +2,8 @@ name: Linux Integration Tests
 
 on:
   push:
+    tags-ignore:
+      - '**'
   pull_request:
 
 permissions:
