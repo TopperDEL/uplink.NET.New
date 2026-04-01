@@ -105,19 +105,21 @@ dotnet nuget push nupkgs/*.nupkg \
 
 ### Publish with GitHub Actions
 
-The workflow in `.github/workflows/build.yml` will publish automatically when you push
-a tag matching `v*`.
+The workflow in `.github/workflows/build.yml` will publish automatically when you
+publish a GitHub Release whose tag matches `v*`.
 
 Recommended release flow:
 
-1. Update the package version in `src/uplink.NET/uplink.NET.csproj`
-2. Ensure the Git tag matches the package version, for example `v1.0.0`
-3. Push the tag
+1. Create or choose a Git tag in the format `v1.0.0`
+2. Create a GitHub Release for that tag and publish it
+3. GitHub Actions fetches the release metadata, derives the NuGet version from the tag, and uses the release title/body as NuGet release notes
 4. GitHub Actions builds the native runtimes, packs the NuGet package, and publishes it using `NUGET_API_KEY`
 
 > [!NOTE]
 > Local `dotnet pack` is useful for validation, but the GitHub Actions release path is the one
-> that bundles the native runtime artifacts before publishing.
+> that bundles the native runtime artifacts before publishing. Local packages keep the
+> version defined in `src/uplink.NET/uplink.NET.csproj`, while release packages use the
+> GitHub Release tag.
 
 ## License
 
