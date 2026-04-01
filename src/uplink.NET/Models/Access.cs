@@ -24,7 +24,6 @@ public class Access : IDisposable
         if (string.IsNullOrWhiteSpace(accessGrant))
             throw new ArgumentNullException(nameof(accessGrant));
 
-        // Parse the serialized access grant
         var accessResult = UplinkInterop.uplink_parse_access(accessGrant);
         try
         {
@@ -34,24 +33,26 @@ public class Access : IDisposable
                 throw new AccessException($"Failed to parse access grant: {msg}");
             }
 
-            // The access result contains a pointer to a handle struct; dereference it
-            unsafe
+            if (accessResult.access == nint.Zero)
             {
-                _accessHandle = *(UplinkInterop.UplinkHandle*)accessResult.access;
+                throw new AccessException("Failed to parse access grant: native library returned a null access handle.");
             }
 
-            // Open the project
+            _accessHandle = new UplinkInterop.UplinkHandle
+            {
+                _handle = (ulong)accessResult.access
+            };
+
+            var nativeConfig = BuildNativeConfig(config);
             UplinkInterop.UplinkProjectResult projectResult;
-            if (config != null)
+
+            try
             {
-                var nativeConfig = BuildNativeConfig(config);
                 projectResult = UplinkInterop.uplink_config_open_project(nativeConfig, _accessHandle);
-                FreeNativeConfig(nativeConfig);
             }
-            else
+            finally
             {
-                var emptyConfig = default(UplinkInterop.UplinkConfig);
-                projectResult = UplinkInterop.uplink_config_open_project(emptyConfig, _accessHandle);
+                FreeNativeConfig(nativeConfig);
             }
 
             if (projectResult.error != nint.Zero)
@@ -68,18 +69,26 @@ public class Access : IDisposable
         }
     }
 
-    private static UplinkInterop.UplinkConfig BuildNativeConfig(Config config)
+    private static UplinkInterop.UplinkConfig BuildNativeConfig(Config? config)
     {
+        string userAgent = config?.UserAgent ?? string.Empty;
+        string tempDirectory = ResolveTempDirectory(config?.TempDirectory);
+
         return new UplinkInterop.UplinkConfig
         {
-            user_agent = config.UserAgent != null
-                ? Marshal.StringToCoTaskMemUTF8(config.UserAgent)
-                : nint.Zero,
-            dial_timeout_milliseconds = config.DialTimeoutMilliseconds,
-            temp_directory = config.TempDirectory != null
-                ? Marshal.StringToCoTaskMemUTF8(config.TempDirectory)
-                : nint.Zero
+            user_agent = Marshal.StringToCoTaskMemUTF8(userAgent),
+            dial_timeout_milliseconds = config?.DialTimeoutMilliseconds ?? 0,
+            temp_directory = Marshal.StringToCoTaskMemUTF8(tempDirectory)
         };
+    }
+
+    private static string ResolveTempDirectory(string? tempDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(tempDirectory))
+            return Path.GetTempPath();
+
+        Directory.CreateDirectory(tempDirectory);
+        return tempDirectory;
     }
 
     private static void FreeNativeConfig(UplinkInterop.UplinkConfig cfg)
