@@ -148,10 +148,9 @@ public class MultipartUploadService : IMultipartUploadService
             }
 
             var partHandle = partResult.part_upload;
+            var uploadResult = new PartUploadResult();
             try
             {
-                var uploadResult = new PartUploadResult();
-
                 var writeResult = UplinkInterop.WithPinnedBuffer(
                     partBytes, 0, partBytes.Length,
                     (ptr, len) => UplinkInterop.uplink_part_upload_write(partHandle, (void*)ptr, len));

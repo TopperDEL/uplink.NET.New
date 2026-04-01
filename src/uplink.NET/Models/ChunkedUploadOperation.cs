@@ -52,7 +52,8 @@ public class ChunkedUploadOperation : IDisposable
     public async Task<bool> CommitAsync()
     {
         if (_committed) return true;
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
         await Task.Yield();
 
         var errPtr = UplinkInterop.uplink_upload_commit(_uploadHandle);
@@ -72,7 +73,8 @@ public class ChunkedUploadOperation : IDisposable
     /// <summary>Aborts the upload, discarding all uploaded data.</summary>
     public async Task<bool> AbortAsync()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
         await Task.Yield();
         var errPtr = UplinkInterop.uplink_upload_abort(_uploadHandle);
         if (errPtr != nint.Zero)
@@ -98,7 +100,11 @@ public class ChunkedUploadOperation : IDisposable
             {
                 var errPtr = UplinkInterop.uplink_upload_abort(_uploadHandle);
                 if (errPtr != nint.Zero)
-                    UplinkInterop.uplink_free_error(errPtr);
+                {
+                    var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                    Failed       = true;
+                    ErrorMessage = msg;
+                }
             }
 
             ReleaseHandle();

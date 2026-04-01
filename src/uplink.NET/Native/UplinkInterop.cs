@@ -15,6 +15,7 @@ internal static unsafe partial class UplinkInterop
     [StructLayout(LayoutKind.Sequential)]
     internal struct UplinkError
     {
+        // uplink-c defines UplinkError as { int32_t code; char* message; }.
         public int  code;
         public nint message; // char*
     }
