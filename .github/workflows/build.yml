@@ -1,0 +1,193 @@
+name: Build and Publish
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+
+# Minimal default permissions for all jobs
+permissions:
+  contents: read
+
+jobs:
+  build-native-windows:
+    name: Build native - Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build uplink-c
+        shell: bash
+        run: |
+          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          cd $HOME/uplink-c
+          make build
+          mkdir -p "$GITHUB_WORKSPACE/native/win-x64"
+          cp .build/storj_uplink.dll "$GITHUB_WORKSPACE/native/win-x64/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-win-x64
+          path: native/win-x64/
+
+  build-native-linux:
+    name: Build native - Linux x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build uplink-c
+        run: |
+          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          cd $HOME/uplink-c
+          make build
+          mkdir -p "$GITHUB_WORKSPACE/native/linux-x64"
+          cp .build/libstorj_uplink.so "$GITHUB_WORKSPACE/native/linux-x64/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-x64
+          path: native/linux-x64/
+
+  build-native-linux-arm64:
+    name: Build native - Linux ARM64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Install cross-compilation toolchain
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build uplink-c
+        run: |
+          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          cd $HOME/uplink-c
+          GOARCH=arm64 GOOS=linux CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 make build
+          mkdir -p "$GITHUB_WORKSPACE/native/linux-arm64"
+          cp .build/libstorj_uplink.so "$GITHUB_WORKSPACE/native/linux-arm64/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-arm64
+          path: native/linux-arm64/
+
+  build-native-macos:
+    name: Build native - macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build uplink-c x64
+        run: |
+          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          cd $HOME/uplink-c
+          GOARCH=amd64 make build
+          mkdir -p "$GITHUB_WORKSPACE/native/osx-x64"
+          cp .build/libstorj_uplink.dylib "$GITHUB_WORKSPACE/native/osx-x64/"
+      - name: Build uplink-c arm64
+        run: |
+          cd $HOME/uplink-c
+          GOARCH=arm64 make build
+          mkdir -p "$GITHUB_WORKSPACE/native/osx-arm64"
+          cp .build/libstorj_uplink.dylib "$GITHUB_WORKSPACE/native/osx-arm64/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-osx-x64
+          path: native/osx-x64/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-osx-arm64
+          path: native/osx-arm64/
+
+  build-native-android:
+    name: Build native - Android ARM64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+          add-to-path: false
+      - name: Build uplink-c for Android ARM64
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          cd $HOME/uplink-c
+          export CC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+          GOOS=android GOARCH=arm64 CGO_ENABLED=1 make build
+          mkdir -p "$GITHUB_WORKSPACE/native/android-arm64"
+          cp .build/libstorj_uplink.so "$GITHUB_WORKSPACE/native/android-arm64/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-android-arm64
+          path: native/android-arm64/
+
+  build-dotnet:
+    name: Build .NET library and NuGet package
+    runs-on: ubuntu-latest
+    needs:
+      - build-native-windows
+      - build-native-linux
+      - build-native-linux-arm64
+      - build-native-macos
+      - build-native-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Arrange runtimes folder
+        run: |
+          mkdir -p src/uplink.NET/runtimes/win-x64/native
+          mkdir -p src/uplink.NET/runtimes/linux-x64/native
+          mkdir -p src/uplink.NET/runtimes/linux-arm64/native
+          mkdir -p src/uplink.NET/runtimes/osx-x64/native
+          mkdir -p src/uplink.NET/runtimes/osx-arm64/native
+          mkdir -p src/uplink.NET/runtimes/android-arm64/native
+          cp artifacts/native-win-x64/storj_uplink.dll          src/uplink.NET/runtimes/win-x64/native/
+          cp artifacts/native-linux-x64/libstorj_uplink.so      src/uplink.NET/runtimes/linux-x64/native/
+          cp artifacts/native-linux-arm64/libstorj_uplink.so    src/uplink.NET/runtimes/linux-arm64/native/
+          cp artifacts/native-osx-x64/libstorj_uplink.dylib     src/uplink.NET/runtimes/osx-x64/native/
+          cp artifacts/native-osx-arm64/libstorj_uplink.dylib   src/uplink.NET/runtimes/osx-arm64/native/
+          cp artifacts/native-android-arm64/libstorj_uplink.so  src/uplink.NET/runtimes/android-arm64/native/
+
+      - name: Restore
+        run: dotnet restore src/uplink.NET/uplink.NET.csproj
+
+      - name: Build
+        run: dotnet build src/uplink.NET/uplink.NET.csproj -c Release --no-restore
+
+      - name: Pack NuGet package
+        run: dotnet pack src/uplink.NET/uplink.NET.csproj -c Release --no-build -o nupkgs/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: nupkgs/
+
+      - name: Publish to NuGet.org
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          dotnet nuget push nupkgs/*.nupkg \
+            --api-key ${{ secrets.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
