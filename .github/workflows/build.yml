@@ -56,7 +56,7 @@ jobs:
           name: native-linux-x64
           path: native/linux-x64/
       - name: Test Windows cross-compile
-          run: |
+        run: |
             git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
             cd $HOME/uplink-c
 
