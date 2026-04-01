@@ -20,6 +20,9 @@ using uplink.NET.Services;
 // Parse the access grant and open a project connection
 using var access = new Access("your-access-grant-here");
 
+// TempDirectory is optional. By default the library uses the platform temp directory.
+// var access = new Access("your-access-grant-here", new Config { TempDirectory = "/custom/temp" });
+
 var buckets = new BucketService(access);
 var objects = new ObjectService(access);
 
