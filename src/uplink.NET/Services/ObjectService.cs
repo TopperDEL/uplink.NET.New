@@ -347,7 +347,13 @@ public class ObjectService : IObjectService
         var infoResult = UplinkInterop.uplink_download_info(downloadHandle);
         try
         {
-            if (infoResult.error != nint.Zero || infoResult.object_ == nint.Zero)
+            if (infoResult.error != nint.Zero)
+            {
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref infoResult.error);
+                throw new IOException($"Failed to inspect Storj download stream: {msg}");
+            }
+
+            if (infoResult.object_ == nint.Zero)
                 return 0;
 
             var contentLength = UplinkInterop.MarshalObject(infoResult.object_).ContentLength;
