@@ -189,7 +189,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable
                 return;
             }
 
-            var access = new Access(entry.AccessGrant);
+            using var access = new Access(entry.AccessGrant);
             CustomMetadata? meta = DeserializeMetadata(entry.CustomMetadataJson);
 
             var uploadOp = await _objectService.UploadObjectAsync(

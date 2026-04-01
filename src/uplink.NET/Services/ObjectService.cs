@@ -19,41 +19,61 @@ public class ObjectService : IObjectService
 
     public Task<UploadOperation> UploadObjectAsync(
         Access access, string bucketName, string key, byte[] objectData)
-        => UploadObjectAsync(access, bucketName, key, objectData,
-            new UploadOptions(), null!, startImmediately: true);
+        => CreateUploadOpAsync(access, bucketName, key, objectData,
+            new UploadOptions(), null, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
         Access access, string bucketName, string key, byte[] objectData, bool startImmediately)
-        => UploadObjectAsync(access, bucketName, key, objectData,
-            new UploadOptions(), null!, startImmediately);
+        => CreateUploadOpAsync(access, bucketName, key, objectData,
+            new UploadOptions(), null, startImmediately);
 
     public Task<UploadOperation> UploadObjectAsync(
         Access access, string bucketName, string key, byte[] objectData, UploadOptions uploadOptions)
-        => UploadObjectAsync(access, bucketName, key, objectData,
-            uploadOptions, null!, startImmediately: true);
+        => CreateUploadOpAsync(access, bucketName, key, objectData,
+            uploadOptions, null, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
         Access access, string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, bool startImmediately)
-        => UploadObjectAsync(access, bucketName, key, objectData,
-            uploadOptions, null!, startImmediately);
+        => CreateUploadOpAsync(access, bucketName, key, objectData,
+            uploadOptions, null, startImmediately);
 
     public Task<UploadOperation> UploadObjectAsync(
         Access access, string bucketName, string key, byte[] objectData, CustomMetadata customMetadata)
-        => UploadObjectAsync(access, bucketName, key, objectData,
+        => CreateUploadOpAsync(access, bucketName, key, objectData,
             new UploadOptions(), customMetadata, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
         Access access, string bucketName, string key, byte[] objectData, CustomMetadata customMetadata, bool startImmediately)
-        => UploadObjectAsync(access, bucketName, key, objectData,
+        => CreateUploadOpAsync(access, bucketName, key, objectData,
             new UploadOptions(), customMetadata, startImmediately);
 
     public Task<UploadOperation> UploadObjectAsync(
         Access access, string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, CustomMetadata customMetadata)
-        => UploadObjectAsync(access, bucketName, key, objectData,
+        => CreateUploadOpAsync(access, bucketName, key, objectData,
             uploadOptions, customMetadata, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
         Access access, string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, CustomMetadata customMetadata, bool startImmediately)
+        => CreateUploadOpAsync(access, bucketName, key, objectData,
+            uploadOptions, customMetadata, startImmediately);
+
+    public async Task<UploadOperation> UploadObjectAsync(
+        Access access, string bucketName, string key, Stream stream,
+        UploadOptions? uploadOptions, CustomMetadata? customMetadata, bool startImmediately)
+    {
+        using var ms = new MemoryStream();
+        await stream.CopyToAsync(ms).ConfigureAwait(false);
+        return await CreateUploadOpAsync(
+            access, bucketName, key, ms.ToArray(),
+            uploadOptions ?? new UploadOptions(),
+            customMetadata,
+            startImmediately).ConfigureAwait(false);
+    }
+
+    // Internal helper that all upload overloads funnel into
+    private static Task<UploadOperation> CreateUploadOpAsync(
+        Access access, string bucketName, string key, byte[] objectData,
+        UploadOptions? uploadOptions, CustomMetadata? customMetadata, bool startImmediately)
     {
         var op = new UploadOperation(
             access._projectHandle,
@@ -67,20 +87,6 @@ public class ObjectService : IObjectService
             op.StartUploadAsync();
 
         return Task.FromResult(op);
-    }
-
-    public async Task<UploadOperation> UploadObjectAsync(
-        Access access, string bucketName, string key, Stream stream,
-        UploadOptions? uploadOptions, CustomMetadata? customMetadata, bool startImmediately)
-    {
-        using var ms = new MemoryStream();
-        await stream.CopyToAsync(ms).ConfigureAwait(false);
-        byte[] data = ms.ToArray();
-        return await UploadObjectAsync(
-            access, bucketName, key, data,
-            uploadOptions ?? new UploadOptions(),
-            customMetadata!,
-            startImmediately).ConfigureAwait(false);
     }
 
     // ── Chunked upload ─────────────────────────────────────────────────────────
