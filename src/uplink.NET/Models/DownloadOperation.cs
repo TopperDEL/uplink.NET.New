@@ -111,6 +111,7 @@ public class DownloadOperation : IDisposable
         }
         finally
         {
+            UplinkInterop.CloseDownloadHandle(downloadHandle);
             UplinkInterop.FreeDownloadHandle(downloadHandle);
         }
     }
@@ -126,7 +127,8 @@ public class DownloadOperation : IDisposable
             _projectHandle, _bucketName, ObjectName, &opts);
         if (result.error != nint.Zero)
         {
-            var (msg, _) = UplinkInterop.ConsumeError(result.error);
+            var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+            UplinkInterop.uplink_free_download_result(result);
             return (nint.Zero, msg);
         }
         return (result.download, null);
