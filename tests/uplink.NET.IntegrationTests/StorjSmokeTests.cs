@@ -228,6 +228,7 @@ public class StorjSmokeTests
         }
         catch (ObjectNotFoundException)
         {
+            // The object may not exist if upload/setup failed before it was committed.
         }
     }
 }

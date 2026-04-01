@@ -41,7 +41,7 @@ internal static class IntegrationTestEnvironment
 
     public static byte[] CreatePayload(int sizeInBytes)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(sizeInBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sizeInBytes);
 
         var payload = new byte[sizeInBytes];
         for (var index = 0; index < payload.Length; index++)
