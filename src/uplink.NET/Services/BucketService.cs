@@ -42,7 +42,7 @@ public class BucketService : IBucketService
         {
             if (result.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeError(result.error);
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
                 throw new BucketCreationException(bucketName, msg);
             }
             return UplinkInterop.MarshalBucket(result.bucket);
@@ -60,7 +60,7 @@ public class BucketService : IBucketService
         {
             if (result.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeError(result.error);
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
                 throw new BucketCreationException(bucketName, msg);
             }
             return UplinkInterop.MarshalBucket(result.bucket);
@@ -78,7 +78,7 @@ public class BucketService : IBucketService
         {
             if (result.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeError(result.error);
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
                 throw new BucketNotFoundException(bucketName, msg);
             }
             return UplinkInterop.MarshalBucket(result.bucket);
@@ -134,7 +134,7 @@ public class BucketService : IBucketService
         {
             if (result.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeError(result.error);
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
                 throw new BucketDeletionException(bucketName, msg);
             }
         }
@@ -151,7 +151,7 @@ public class BucketService : IBucketService
         {
             if (result.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeError(result.error);
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
                 throw new BucketDeletionException(bucketName, msg);
             }
         }

@@ -132,7 +132,8 @@ public class UploadOperation : IDisposable
             _projectHandle, _bucketName, ObjectName, &opts);
         if (result.error != nint.Zero)
         {
-            var (msg, _) = UplinkInterop.ConsumeError(result.error);
+            var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+            UplinkInterop.uplink_free_upload_result(result);
             return (nint.Zero, msg);
         }
         return (result.upload, null);

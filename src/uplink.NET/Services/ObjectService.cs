@@ -106,7 +106,8 @@ public class ObjectService : IObjectService
 
         if (uploadResult.error != nint.Zero)
         {
-            var (msg, _) = UplinkInterop.ConsumeError(uploadResult.error);
+            var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref uploadResult.error);
+            UplinkInterop.uplink_free_upload_result(uploadResult);
             throw new Exception($"Failed to begin upload: {msg}");
         }
 
@@ -190,7 +191,7 @@ public class ObjectService : IObjectService
             {
                 if (result.error != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeError(result.error);
+                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
                     throw new ObjectNotFoundException(key, msg);
                 }
                 return UplinkInterop.MarshalObject(result.object_);
@@ -232,7 +233,7 @@ public class ObjectService : IObjectService
             {
                 if (result.error != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeError(result.error);
+                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
                     throw new ObjectNotFoundException(key, msg);
                 }
             }

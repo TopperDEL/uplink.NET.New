@@ -31,7 +31,7 @@ public class MultipartUploadService : IMultipartUploadService
             {
                 if (result.error != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeError(result.error);
+                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
                     throw new MultipartUploadFailedException(msg);
                 }
                 return UplinkInterop.MarshalUploadInfo(result.info);
@@ -102,7 +102,7 @@ public class MultipartUploadService : IMultipartUploadService
                 var commitResult = new CommitUploadResult();
                 if (result.error != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeError(result.error);
+                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
                     commitResult.Error = msg;
                 }
                 else if (result.object_ != nint.Zero)
@@ -143,7 +143,8 @@ public class MultipartUploadService : IMultipartUploadService
 
             if (partResult.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeError(partResult.error);
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref partResult.error);
+                UplinkInterop.uplink_free_part_upload_result(partResult);
                 throw new MultipartUploadFailedException(msg);
             }
 
@@ -202,7 +203,7 @@ public class MultipartUploadService : IMultipartUploadService
             {
                 if (result.error != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeError(result.error);
+                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
                     throw new MultipartUploadFailedException(msg);
                 }
                 return UplinkInterop.MarshalPart(result.part);

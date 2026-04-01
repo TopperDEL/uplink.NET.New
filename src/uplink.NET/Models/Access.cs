@@ -28,7 +28,7 @@ public class Access : IDisposable
         {
             if (accessResult.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeError(accessResult.error);
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref accessResult.error);
                 throw new AccessException($"Failed to parse access grant: {msg}");
             }
 
@@ -51,7 +51,8 @@ public class Access : IDisposable
 
             if (projectResult.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeError(projectResult.error);
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref projectResult.error);
+                UplinkInterop.uplink_free_project_result(projectResult);
                 throw new AccessException($"Failed to open project: {msg}");
             }
 
@@ -108,6 +109,7 @@ public class Access : IDisposable
 
         if (_projectHandle != nint.Zero)
         {
+            UplinkInterop.CloseProjectHandle(_projectHandle);
             UplinkInterop.FreeProjectHandle(_projectHandle);
             _projectHandle = nint.Zero;
         }
