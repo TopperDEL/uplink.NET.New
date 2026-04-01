@@ -21,7 +21,9 @@ public class StorjSmokeTests
             Assert.Equal(context.BucketName, bucket.Name);
 
             var upload = await objectService.UploadObjectAsync(context.Access, context.BucketName, objectKey, payload, startImmediately: false);
-            await upload.StartUploadAsync()!;
+            var uploadTask = upload.StartUploadAsync();
+            Assert.NotNull(uploadTask);
+            await uploadTask;
             Assert.True(upload.Completed);
             Assert.False(upload.Failed);
             Assert.False(upload.Cancelled);
@@ -31,7 +33,9 @@ public class StorjSmokeTests
             Assert.Equal(payload.Length, storedObject.ContentLength);
 
             var download = await objectService.DownloadObjectAsync(context.Access, context.BucketName, objectKey, startImmediately: false);
-            await download.StartDownloadAsync()!;
+            var downloadTask = download.StartDownloadAsync();
+            Assert.NotNull(downloadTask);
+            await downloadTask;
             Assert.True(download.Completed);
             Assert.False(download.Failed);
             Assert.False(download.Cancelled);
