@@ -80,9 +80,18 @@ To build locally:
 dotnet build uplink.NET.sln
 ```
 
-## Local integration testing
+## Testing
 
-The integration tests expect two environment variables:
+For a quick local validation run:
+
+```bash
+dotnet build uplink.NET.sln -c Release
+dotnet test uplink.NET.sln -c Release --no-build
+```
+
+### Local integration testing
+
+The Storj-backed integration tests expect two environment variables:
 
 - `TEST_ACCESS_GRANT`
 - `TEST_BUCKET`
@@ -94,6 +103,10 @@ TEST_ACCESS_GRANT=... TEST_BUCKET=... ./scripts/run-integration-tests.sh
 ```
 
 If you already have a local checkout of `storj/uplink-c`, set `UPLINK_C_DIR` to reuse it instead of cloning a temporary copy.
+
+### CI on every commit and pull request
+
+`.github/workflows/ci.yml` runs automatically for every branch commit and every pull request. It builds the Linux native runtime, restores and builds the solution, and runs the test suite. If `TEST_ACCESS_GRANT` or `TEST_BUCKET` are not configured in GitHub Actions, the Storj integration tests are skipped cleanly.
 
 ## NuGet publishing
 
@@ -128,19 +141,21 @@ dotnet nuget push nupkgs/*.nupkg \
 
 ### Publish with GitHub Actions
 
-The release workflow in `.github/workflows/build.yml` runs for release tags (`v*`) and published GitHub Releases. It builds the native runtimes, runs the Linux-backed integration tests before packing, and publishes to NuGet.org only for the release event.
+The release workflow in `.github/workflows/build.yml` runs for pushed version tags in the format `v*` and for published GitHub Releases. It builds the native runtimes, runs the Linux-backed integration tests before packing, and then:
 
-A separate `.github/workflows/ci.yml` workflow runs on every commit and pull request. It builds the Linux native runtime and executes the test suite with it. If `TEST_ACCESS_GRANT` or `TEST_BUCKET` are not available, the Storj integration tests are skipped cleanly.
+- pushes the `.nupkg` to NuGet.org when a version tag is pushed
+- attaches the generated `.nupkg` to the matching GitHub Release when a GitHub Release for that tag is published
 
 Recommended release flow:
 
 1. Run `./scripts/run-integration-tests.sh` locally with `TEST_ACCESS_GRANT` and `TEST_BUCKET` set
 2. Create or choose a Git tag in the format `v1.0.0`
-3. Push the tag and/or publish a GitHub Release for it
-4. GitHub Actions builds the native runtimes, runs the Linux integration test gate, packs the NuGet package, and publishes it using `NUGET_API_KEY` when the release is published
+3. Push the tag to GitHub (only push tags that should publish to NuGet.org)
+4. GitHub Actions builds the native runtimes, runs the Linux integration test gate, packs the NuGet package, and publishes it to NuGet.org using `NUGET_API_KEY`
+5. Publish a GitHub Release for the same tag when you want the generated `.nupkg` attached to the release assets
 
 > [!NOTE]
-> Local `dotnet pack` is useful for validation, but release builds are the path that bundle the native runtime artifacts before publishing.
+> Local `dotnet pack` is useful for validation, but the tag/release workflow is the path that bundles the native runtime artifacts before publishing and attaching release assets.
 
 ## License
 

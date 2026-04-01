@@ -1,11 +1,14 @@
 name: Build and Publish
 
 on:
+  push:
+    tags:
+      - 'v*'
   release:
     types: [ published ]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-native-windows:
@@ -239,8 +242,14 @@ jobs:
           name: nuget-package
           path: nupkgs/
 
-      - name: Publish to NuGet.org
+      - name: Attach NuGet package to GitHub Release
         if: github.event_name == 'release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" nupkgs/*.nupkg --clobber
+
+      - name: Publish to NuGet.org
+        if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
         run: |
           dotnet nuget push nupkgs/*.nupkg \
             --api-key ${{ secrets.NUGET_API_KEY }} \
