@@ -40,7 +40,7 @@ public class Access : IDisposable
 
             _accessHandle = new UplinkInterop.UplinkHandle
             {
-                _handle = (ulong)accessResult.access
+                _handle = (ulong)(nuint)accessResult.access
             };
 
             var nativeConfig = BuildNativeConfig(config);
@@ -87,7 +87,15 @@ public class Access : IDisposable
         if (string.IsNullOrWhiteSpace(tempDirectory))
             return Path.GetTempPath();
 
-        Directory.CreateDirectory(tempDirectory);
+        try
+        {
+            Directory.CreateDirectory(tempDirectory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            throw new AccessException($"Failed to prepare temp directory '{tempDirectory}': {ex.Message}");
+        }
+
         return tempDirectory;
     }
 
