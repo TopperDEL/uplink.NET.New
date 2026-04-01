@@ -55,6 +55,18 @@ jobs:
         with:
           name: native-linux-x64
           path: native/linux-x64/
+      - name: Test Windows cross-compile
+          run: |
+            git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+            cd $HOME/uplink-c
+
+            export GOOS=windows
+            export GOARCH=amd64
+            export CGO_ENABLED=1
+            export CC="zig cc -target x86_64-windows-gnu"
+
+            make build
+            file .build/*
 
   build-native-linux-arm64:
     name: Build native - Linux ARM64
