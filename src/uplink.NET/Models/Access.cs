@@ -96,10 +96,10 @@ public class Access : IDisposable
                 throw new AccessException($"Failed to serialize access grant: {msg}");
             }
 
-            if (result.value == nint.Zero)
+            if (result.stringValue == nint.Zero)
                 throw new AccessException("Failed to serialize access grant: native library returned a null string.");
 
-            return UplinkInterop.PtrToString(result.value);
+            return UplinkInterop.PtrToString(result.stringValue);
         }
         finally
         {

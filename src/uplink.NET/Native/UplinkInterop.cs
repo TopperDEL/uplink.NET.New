@@ -220,7 +220,7 @@ internal static unsafe partial class UplinkInterop
     [StructLayout(LayoutKind.Sequential)]
     internal struct UplinkStringResult
     {
-        public nint value; // char*
+        public nint stringValue; // char*
         public nint error; // UplinkError*
     }
 
