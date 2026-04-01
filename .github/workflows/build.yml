@@ -136,13 +136,13 @@ jobs:
 
             const release = releaseResponse.data;
             const tagName = release.tag_name ?? '';
+            const packageVersion = tagName.startsWith('v') ? tagName.slice(1).trim() : '';
 
-            if (!tagName.startsWith('v') || tagName.length <= 1) {
+            if (!tagName.startsWith('v') || packageVersion.length === 0) {
               core.setFailed(`Release tag "${tagName}" must start with "v", for example "v1.0.0".`);
               return;
             }
 
-            const packageVersion = tagName.slice(1);
             const releaseTitle = (release.name ?? '').trim();
             const releaseBody = (release.body ?? '').trim();
             const releaseNotes = [releaseTitle, releaseBody].filter(Boolean).join('\n\n');
