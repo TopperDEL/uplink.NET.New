@@ -6,6 +6,7 @@ internal static class IntegrationTestEnvironment
 {
     public const string AccessGrantVariableName = "TEST_ACCESS_GRANT";
     public const string BucketVariableName = "TEST_BUCKET";
+    public const int StorjInlinePlacementLimitBytes = 4 * 1024;
 
     public static string? SkipReason
     {
@@ -33,6 +34,17 @@ internal static class IntegrationTestEnvironment
             new Access(accessGrant, new Config { TempDirectory = tempDirectory }),
             bucketName,
             tempDirectory);
+    }
+
+    public static byte[] CreatePayload(int sizeInBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(sizeInBytes);
+
+        var payload = new byte[sizeInBytes];
+        for (var index = 0; index < payload.Length; index++)
+            payload[index] = (byte)(index % 251);
+
+        return payload;
     }
 
     private static string[] GetMissingVariables()
