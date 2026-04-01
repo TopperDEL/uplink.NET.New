@@ -8,6 +8,10 @@ on:
   pull_request:
     branches: [ main ]
 
+# Minimal default permissions for all jobs
+permissions:
+  contents: read
+
 jobs:
   build-native-windows:
     name: Build native - Windows
