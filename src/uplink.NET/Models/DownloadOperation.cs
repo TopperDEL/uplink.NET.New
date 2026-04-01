@@ -160,7 +160,8 @@ public class DownloadOperation : IDisposable
         if (readResult.error != nint.Zero)
         {
             var (msg, code) = UplinkInterop.ConsumeError(readResult.error);
-            bool isEof = code == 0x02 || msg.Contains("EOF", StringComparison.OrdinalIgnoreCase);
+            bool isEof = code == UplinkInterop.EndOfFileErrorCode
+                || msg.Contains("EOF", StringComparison.OrdinalIgnoreCase);
             return (bytesRead, isEof, isEof ? null : msg);
         }
         return (bytesRead, bytesRead == 0, null);

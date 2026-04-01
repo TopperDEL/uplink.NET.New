@@ -10,6 +10,7 @@ namespace uplink.NET.Native;
 internal static unsafe partial class UplinkInterop
 {
     private const string LibName = "storj_uplink";
+    internal const int EndOfFileErrorCode = -1;
 
     // ── Error ────────────────────────────────────────────────────────────────
     [StructLayout(LayoutKind.Sequential)]
@@ -436,7 +437,7 @@ internal static unsafe partial class UplinkInterop
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     /// <summary>Reads error message and code from a native UplinkError*, then frees it.</summary>
-    internal static (string message, uint code) ConsumeError(nint errorPtr)
+    internal static (string message, int code) ConsumeError(nint errorPtr)
     {
         if (errorPtr == nint.Zero)
             return (string.Empty, 0);
@@ -445,7 +446,7 @@ internal static unsafe partial class UplinkInterop
         string msg = err.message != nint.Zero
             ? Marshal.PtrToStringUTF8(err.message) ?? string.Empty
             : string.Empty;
-        uint code = unchecked((uint)err.code);
+        int code = err.code;
         uplink_free_error(errorPtr);
         return (msg, code);
     }
