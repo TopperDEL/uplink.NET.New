@@ -23,10 +23,14 @@ public class AccessGrantTests
             await bucketService.EnsureBucketAsync(context.BucketName);
 
             var allowedUpload = await objectService.UploadObjectAsync(context.Access, context.BucketName, allowedObjectKey, payload, startImmediately: false);
-            await allowedUpload.StartUploadAsync()!;
+            var allowedUploadTask = allowedUpload.StartUploadAsync();
+            Assert.NotNull(allowedUploadTask);
+            await allowedUploadTask;
 
             var blockedUpload = await objectService.UploadObjectAsync(context.Access, context.BucketName, blockedObjectKey, payload, startImmediately: false);
-            await blockedUpload.StartUploadAsync()!;
+            var blockedUploadTask = blockedUpload.StartUploadAsync();
+            Assert.NotNull(blockedUploadTask);
+            await blockedUploadTask;
 
             using var sharedAccess = context.Access.Share(
                 new Permission
@@ -83,7 +87,9 @@ public class AccessGrantTests
             await bucketService.EnsureBucketAsync(context.BucketName);
 
             var upload = await objectService.UploadObjectAsync(context.Access, context.BucketName, objectKey, payload, startImmediately: false);
-            await upload.StartUploadAsync()!;
+            var uploadTask = upload.StartUploadAsync();
+            Assert.NotNull(uploadTask);
+            await uploadTask;
 
             using var childAccess = context.Access.Share(
                 new Permission

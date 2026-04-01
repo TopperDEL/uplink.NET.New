@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using uplink.NET.Exceptions;
 using uplink.NET.Native;
@@ -81,6 +82,7 @@ public class Access : IDisposable
         }
     }
 
+    /// <summary>Serialize this access grant so it can be stored or reused later.</summary>
     public string Serialize()
     {
         ThrowIfDisposed();
@@ -94,10 +96,10 @@ public class Access : IDisposable
                 throw new AccessException($"Failed to serialize access grant: {msg}");
             }
 
-            if (result.string_ == nint.Zero)
+            if (result.value == nint.Zero)
                 throw new AccessException("Failed to serialize access grant: native library returned a null string.");
 
-            return UplinkInterop.PtrToString(result.string_);
+            return UplinkInterop.PtrToString(result.value);
         }
         finally
         {
@@ -105,9 +107,11 @@ public class Access : IDisposable
         }
     }
 
+    /// <summary>Share this access grant with the supplied permission set and prefixes.</summary>
     public Access Share(Permission permission, params SharePrefix[] prefixes)
         => Share(permission, (IEnumerable<SharePrefix>)prefixes);
 
+    /// <summary>Share this access grant with the supplied permission set and prefixes.</summary>
     public unsafe Access Share(Permission permission, IEnumerable<SharePrefix> prefixes)
     {
         ThrowIfDisposed();
@@ -186,6 +190,7 @@ public class Access : IDisposable
         }
     }
 
+    /// <summary>Revoke a child access grant that was derived from this access grant.</summary>
     public Task RevokeAsync(Access childAccess)
     {
         ThrowIfDisposed();
