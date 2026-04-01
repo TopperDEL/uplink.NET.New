@@ -144,13 +144,13 @@ dotnet nuget push nupkgs/*.nupkg \
 The release workflow in `.github/workflows/build.yml` runs for pushed version tags in the format `v*` and for published GitHub Releases. It builds the native runtimes, runs the Linux-backed integration tests before packing, and then:
 
 - pushes the `.nupkg` to NuGet.org when a version tag is pushed
-- attaches the generated `.nupkg` to the matching GitHub Release when the release is published
+- attaches the generated `.nupkg` to the matching GitHub Release when a GitHub Release for that tag is published
 
 Recommended release flow:
 
 1. Run `./scripts/run-integration-tests.sh` locally with `TEST_ACCESS_GRANT` and `TEST_BUCKET` set
 2. Create or choose a Git tag in the format `v1.0.0`
-3. Push the tag to GitHub
+3. Push the tag to GitHub (only push tags that should publish to NuGet.org)
 4. GitHub Actions builds the native runtimes, runs the Linux integration test gate, packs the NuGet package, and publishes it to NuGet.org using `NUGET_API_KEY`
 5. Publish a GitHub Release for the same tag when you want the generated `.nupkg` attached to the release assets
 

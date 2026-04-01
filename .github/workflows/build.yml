@@ -249,7 +249,7 @@ jobs:
         run: gh release upload "${{ github.event.release.tag_name }}" nupkgs/*.nupkg --clobber
 
       - name: Publish to NuGet.org
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
         run: |
           dotnet nuget push nupkgs/*.nupkg \
             --api-key ${{ secrets.NUGET_API_KEY }} \
