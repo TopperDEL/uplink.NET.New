@@ -93,7 +93,7 @@ public class Access : IDisposable
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
         {
-            throw new AccessException($"Failed to prepare temp directory '{tempDirectory}': {ex.Message}");
+            throw new AccessException($"Failed to prepare temp directory '{tempDirectory}' ({ex.GetType().Name}): {ex.Message}");
         }
 
         return tempDirectory;
