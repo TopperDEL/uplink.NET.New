@@ -172,33 +172,35 @@ jobs:
         run: dotnet restore src/uplink.NET/uplink.NET.csproj
 
       - name: Build
+        shell: pwsh
         env:
           PACKAGE_VERSION: ${{ steps.package_metadata.outputs.package_version }}
         run: |
-          build_args=()
+          $buildArgs = @('build', 'src/uplink.NET/uplink.NET.csproj', '-c', 'Release', '--no-restore')
 
-          if [ -n "$PACKAGE_VERSION" ]; then
-            build_args+=("-p:Version=$PACKAGE_VERSION")
-          fi
+          if ($env:PACKAGE_VERSION) {
+            $buildArgs += "-p:Version=$($env:PACKAGE_VERSION)"
+          }
 
-          dotnet build src/uplink.NET/uplink.NET.csproj -c Release --no-restore "${build_args[@]}"
+          & dotnet @buildArgs
 
       - name: Pack NuGet package
+        shell: pwsh
         env:
           PACKAGE_VERSION: ${{ steps.package_metadata.outputs.package_version }}
           PACKAGE_RELEASE_NOTES: ${{ steps.package_metadata.outputs.package_release_notes }}
         run: |
-          pack_args=()
+          $packArgs = @('pack', 'src/uplink.NET/uplink.NET.csproj', '-c', 'Release', '--no-build', '-o', 'nupkgs/')
 
-          if [ -n "$PACKAGE_VERSION" ]; then
-            pack_args+=("-p:Version=$PACKAGE_VERSION")
-          fi
+          if ($env:PACKAGE_VERSION) {
+            $packArgs += "-p:Version=$($env:PACKAGE_VERSION)"
+          }
 
-          if [ -n "$PACKAGE_RELEASE_NOTES" ]; then
-            pack_args+=("-p:PackageReleaseNotes=$PACKAGE_RELEASE_NOTES")
-          fi
+          if ($env:PACKAGE_RELEASE_NOTES) {
+            $packArgs += "-p:PackageReleaseNotes=$($env:PACKAGE_RELEASE_NOTES)"
+          }
 
-          dotnet pack src/uplink.NET/uplink.NET.csproj -c Release --no-build -o nupkgs/ "${pack_args[@]}"
+          & dotnet @packArgs
 
       - uses: actions/upload-artifact@v4
         with:
