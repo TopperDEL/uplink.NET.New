@@ -9,15 +9,17 @@ namespace uplink.NET.Services;
 /// Persists pending uploads in a local SQLite database and processes them
 /// sequentially in the background.
 /// </summary>
-public class UploadQueueService : IUploadQueueService, IDisposable
+public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDisposable
 {
-    private const int PartSize = 5 * 1024 * 1024; // 5 MB per multipart part
+    private const int PartSize          = 5 * 1024 * 1024; // 5 MB per multipart part
+    private const int PollingIntervalMs = 2_000;            // poll interval for the background loop
 
     private readonly SQLiteAsyncConnection _db;
     private readonly ObjectService _objectService;
 
     private CancellationTokenSource? _cts;
     private Task? _processingTask;
+    private bool _initialized;
     private bool _disposed;
 
     public bool UploadInProgress { get; private set; }
@@ -30,13 +32,14 @@ public class UploadQueueService : IUploadQueueService, IDisposable
     {
         _db            = new SQLiteAsyncConnection(databasePath);
         _objectService = objectService ?? throw new ArgumentNullException(nameof(objectService));
-        InitDatabaseAsync().GetAwaiter().GetResult();
     }
 
-    private async Task InitDatabaseAsync()
+    private async Task EnsureInitializedAsync()
     {
+        if (_initialized) return;
         await _db.CreateTableAsync<UploadQueueEntry>().ConfigureAwait(false);
         await _db.CreateTableAsync<UploadQueueEntryData>().ConfigureAwait(false);
+        _initialized = true;
     }
 
     // ── Add to queue ──────────────────────────────────────────────────────────
@@ -51,6 +54,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable
         string bucketName, string key, string accessGrant,
         byte[] objectData, string identifier, CustomMetadata customMetadata)
     {
+        await EnsureInitializedAsync().ConfigureAwait(false);
         var entry = new UploadQueueEntry
         {
             BucketName         = bucketName,
@@ -93,20 +97,28 @@ public class UploadQueueService : IUploadQueueService, IDisposable
     // ── Query ─────────────────────────────────────────────────────────────────
 
     public async Task<List<UploadQueueEntry>> GetAwaitingUploadsAsync()
-        => await _db.Table<UploadQueueEntry>()
+    {
+        await EnsureInitializedAsync().ConfigureAwait(false);
+        return await _db.Table<UploadQueueEntry>()
             .Where(e => !e.Failed)
             .ToListAsync()
             .ConfigureAwait(false);
+    }
 
-    public Task<int> GetOpenUploadCountAsync()
-        => _db.Table<UploadQueueEntry>()
+    public async Task<int> GetOpenUploadCountAsync()
+    {
+        await EnsureInitializedAsync().ConfigureAwait(false);
+        return await _db.Table<UploadQueueEntry>()
             .Where(e => !e.Failed)
-            .CountAsync();
+            .CountAsync()
+            .ConfigureAwait(false);
+    }
 
     // ── Cancel / retry ────────────────────────────────────────────────────────
 
     public async Task CancelUploadAsync(string key)
     {
+        await EnsureInitializedAsync().ConfigureAwait(false);
         var entry = await _db.Table<UploadQueueEntry>()
             .Where(e => e.Key == key)
             .FirstOrDefaultAsync()
@@ -125,6 +137,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable
 
     public async Task RetryAsync(string key)
     {
+        await EnsureInitializedAsync().ConfigureAwait(false);
         var entry = await _db.Table<UploadQueueEntry>()
             .Where(e => e.Key == key)
             .FirstOrDefaultAsync()
@@ -156,6 +169,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable
 
     private async Task ProcessLoopAsync(CancellationToken ct)
     {
+        await EnsureInitializedAsync().ConfigureAwait(false);
         while (!ct.IsCancellationRequested)
         {
             var entries = await _db.Table<UploadQueueEntry>()
@@ -169,7 +183,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable
                 await ProcessEntryAsync(entry).ConfigureAwait(false);
             }
 
-            await Task.Delay(2000, ct).ConfigureAwait(false);
+            await Task.Delay(PollingIntervalMs, ct).ConfigureAwait(false);
         }
     }
 
@@ -263,6 +277,16 @@ public class UploadQueueService : IUploadQueueService, IDisposable
         if (_disposed) return;
         _disposed = true;
         _cts?.Cancel();
-        _db.CloseAsync().GetAwaiter().GetResult();
+        // Best effort synchronous close; prefer DisposeAsync when possible.
+        try { _db.CloseAsync().GetAwaiter().GetResult(); } catch { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _cts?.Cancel();
+        await _db.CloseAsync().ConfigureAwait(false);
+        GC.SuppressFinalize(this);
     }
 }

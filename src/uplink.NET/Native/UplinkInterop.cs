@@ -29,7 +29,7 @@ internal static unsafe partial class UplinkInterop
     {
         public nint user_agent;               // char*
         public int  dial_timeout_milliseconds;
-        public nint temp_directory;           // char* (actually int64_t in some versions; keep as nint for pointer compat)
+        public nint temp_directory;           // char* – targets uplink-c >= 1.0 (see uplink.h UplinkConfig)
     }
 
     // ── Bucket ───────────────────────────────────────────────────────────────

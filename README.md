@@ -72,4 +72,3 @@ dotnet build src/uplink.NET/uplink.NET.csproj
 ## License
 
 MIT
-Test-project
