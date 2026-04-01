@@ -69,6 +69,53 @@ To build locally:
 dotnet build src/uplink.NET/uplink.NET.csproj
 ```
 
+## NuGet publishing
+
+The package metadata needed for NuGet.org is defined in
+`src/uplink.NET/uplink.NET.csproj`.
+That includes the package version, author, description, tags, license, README, and
+repository links.
+
+### Requirements
+
+- A NuGet.org account
+- A NuGet.org API key
+- The `NUGET_API_KEY` repository secret for GitHub Actions publishing
+
+An image is not required for publishing. A package icon can be added later, and README
+images are optional if they are hosted publicly.
+
+### Create a local package
+
+```bash
+dotnet build src/uplink.NET/uplink.NET.csproj -c Release
+dotnet pack src/uplink.NET/uplink.NET.csproj -c Release -o nupkgs/
+```
+
+### Publish manually
+
+```bash
+dotnet nuget push nupkgs/*.nupkg \
+  --api-key <YOUR_NUGET_API_KEY> \
+  --source https://api.nuget.org/v3/index.json
+```
+
+### Publish with GitHub Actions
+
+The workflow in `.github/workflows/build.yml` will publish automatically when you push
+a tag matching `v*`.
+
+Recommended release flow:
+
+1. Update the package version in `src/uplink.NET/uplink.NET.csproj`
+2. Ensure the Git tag matches the package version, for example `v1.0.0`
+3. Push the tag
+4. GitHub Actions builds the native runtimes, packs the NuGet package, and publishes it using `NUGET_API_KEY`
+
+> [!NOTE]
+> Local `dotnet pack` is useful for validation, but the GitHub Actions release path is the one
+> that bundles the native runtime artifacts before publishing.
+
 ## License
 
 MIT
