@@ -13,7 +13,7 @@ public class DownloadOperation : IDisposable
 {
     private const int ChunkSize = 80 * 1024; // 80 KB
 
-    private readonly UplinkInterop.UplinkHandle _projectHandle;
+    private readonly nint _projectHandle;
     private readonly string _bucketName;
     private readonly DownloadOptions _options;
 
@@ -36,7 +36,7 @@ public class DownloadOperation : IDisposable
     public event DownloadOperationEnded? DownloadOperationEnded;
 
     internal DownloadOperation(
-        UplinkInterop.UplinkHandle projectHandle,
+        nint projectHandle,
         string bucketName,
         string objectName,
         DownloadOptions options)
@@ -113,9 +113,13 @@ public class DownloadOperation : IDisposable
             CloseNativeDownload(downloadHandle);
             SetFailed(ex.Message);
         }
+        finally
+        {
+            UplinkInterop.FreeDownloadHandle(downloadHandle);
+        }
     }
 
-    private unsafe (UplinkInterop.UplinkHandle handle, string? error) BeginNativeDownload()
+    private unsafe (nint handle, string? error) BeginNativeDownload()
     {
         var opts = new UplinkInterop.UplinkDownloadOptions
         {
@@ -127,15 +131,12 @@ public class DownloadOperation : IDisposable
         if (result.error != nint.Zero)
         {
             var (msg, _) = UplinkInterop.ConsumeError(result.error);
-            UplinkInterop.uplink_free_download_result(result);
-            return (default, msg);
+            return (nint.Zero, msg);
         }
-        var handle = result.download;
-        UplinkInterop.uplink_free_download_result(result);
-        return (handle, null);
+        return (result.download, null);
     }
 
-    private static long GetTotalBytes(UplinkInterop.UplinkHandle handle)
+    private static long GetTotalBytes(nint handle)
     {
         var infoResult = UplinkInterop.uplink_download_info(handle);
         long total = 0;
@@ -146,7 +147,7 @@ public class DownloadOperation : IDisposable
     }
 
     private static unsafe (uint bytesRead, bool eof, string? error) ReadChunk(
-        UplinkInterop.UplinkHandle handle, byte[] buffer)
+        nint handle, byte[] buffer)
     {
         UplinkInterop.UplinkReadResult readResult;
         fixed (byte* bufPtr = buffer)
@@ -165,7 +166,7 @@ public class DownloadOperation : IDisposable
         return (bytesRead, bytesRead == 0, null);
     }
 
-    private static void CloseNativeDownload(UplinkInterop.UplinkHandle handle)
+    private static void CloseNativeDownload(nint handle)
     {
         var errPtr = UplinkInterop.uplink_close_download(handle);
         if (errPtr != nint.Zero) UplinkInterop.uplink_free_error(errPtr);

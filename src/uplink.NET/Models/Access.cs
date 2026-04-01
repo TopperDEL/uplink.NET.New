@@ -10,8 +10,7 @@ namespace uplink.NET.Models;
 /// </summary>
 public class Access : IDisposable
 {
-    internal UplinkInterop.UplinkHandle _projectHandle;
-    internal UplinkInterop.UplinkHandle _accessHandle;
+    internal nint _projectHandle;
 
     private bool _disposed;
 
@@ -38,17 +37,12 @@ public class Access : IDisposable
                 throw new AccessException("Failed to parse access grant: native library returned a null access handle.");
             }
 
-            _accessHandle = new UplinkInterop.UplinkHandle
-            {
-                _handle = (ulong)(nuint)accessResult.access
-            };
-
             var nativeConfig = BuildNativeConfig(config);
             UplinkInterop.UplinkProjectResult projectResult;
 
             try
             {
-                projectResult = UplinkInterop.uplink_config_open_project(nativeConfig, _accessHandle);
+                projectResult = UplinkInterop.uplink_config_open_project(nativeConfig, accessResult.access);
             }
             finally
             {
@@ -112,12 +106,13 @@ public class Access : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        if (_projectHandle._handle != 0)
+        if (_projectHandle != nint.Zero)
         {
             var errPtr = UplinkInterop.uplink_close_project(_projectHandle);
             if (errPtr != nint.Zero)
                 UplinkInterop.uplink_free_error(errPtr);
-            _projectHandle = default;
+            UplinkInterop.FreeProjectHandle(_projectHandle);
+            _projectHandle = nint.Zero;
         }
     }
 
