@@ -10,8 +10,12 @@
     <Authors>TopperDEL</Authors>
     <Description>.NET 10+ wrapper around the storj/uplink-c library for accessing the Storj decentralized cloud storage network.</Description>
     <PackageTags>storj uplink decentralized cloud storage</PackageTags>
+    <PackageProjectUrl>https://github.com/TopperDEL/uplink.NET.New</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/TopperDEL/uplink.NET.New</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
