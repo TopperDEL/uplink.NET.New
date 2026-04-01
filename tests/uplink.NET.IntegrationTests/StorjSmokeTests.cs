@@ -10,6 +10,7 @@ public class StorjSmokeTests
     public static TheoryData<int> RoundtripObjectSizes => new()
     {
         256,
+        IntegrationTestEnvironment.StorjInlinePlacementLimitBytes - 1,
         IntegrationTestEnvironment.StorjInlinePlacementLimitBytes,
         IntegrationTestEnvironment.StorjInlinePlacementLimitBytes + 1,
         8 * 1024,
