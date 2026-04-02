@@ -108,12 +108,23 @@ jobs:
       - name: Integration test configuration
         run: echo "${{ steps.integration_test_config.outputs.message }}"
 
+      - name: Prepare diagnostics logging
+        id: prepare_diagnostics
+        shell: bash
+        run: |
+          diagnostics_dir="$GITHUB_WORKSPACE/TestResults/diagnostics"
+          mkdir -p "$diagnostics_dir"
+          echo "path=$diagnostics_dir" >> "$GITHUB_OUTPUT"
+          echo "uplink.NET diagnostics logs will be written to: $diagnostics_dir"
+
       - name: Run test suite
         id: run_tests
         env:
           TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
+          UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
+          UPLINK_NET_DIAGNOSTICS_DIR: ${{ steps.prepare_diagnostics.outputs.path }}
         run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests"
 
       - name: Upload test results
@@ -124,11 +135,20 @@ jobs:
           path: TestResults/
           if-no-files-found: warn
 
+      - name: Upload diagnostics logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-logs-linux
+          path: ${{ steps.prepare_diagnostics.outputs.path }}/
+          if-no-files-found: warn
+
       - name: Summarize test results
         if: ${{ always() }}
         shell: bash
         env:
           TEST_OUTCOME: ${{ steps.run_tests.outcome }}
+          DIAGNOSTICS_DIR: ${{ steps.prepare_diagnostics.outputs.path }}
         run: |
           python <<'PY'
           import os
@@ -139,6 +159,8 @@ jobs:
           results_dir = Path("TestResults")
           trx_files = sorted(results_dir.rglob("*.trx"))
           outcome = os.environ.get("TEST_OUTCOME", "unknown")
+          diagnostics_dir = Path(os.environ["DIAGNOSTICS_DIR"])
+          diagnostics_logs = sorted(diagnostics_dir.rglob("*.log")) if diagnostics_dir.exists() else []
 
           def parse_dt(value: str):
               if not value:
@@ -198,10 +220,19 @@ jobs:
               f"| Failed | {totals['failed']} |",
               f"| Skipped | {totals['skipped']} |",
               f"| Duration | {duration} |",
+              f"| Diagnostics directory | `{diagnostics_dir}` |",
+              f"| Diagnostics log files | {len(diagnostics_logs)} |",
+              "| Diagnostics artifact | `ci-diagnostics-logs-linux` |",
           ]
 
           if not trx_files:
               lines.extend(["", "_No TRX test result files were generated._"])
+
+          if diagnostics_logs:
+              lines.extend(["", "### Diagnostics logs", ""])
+              lines.extend(f"- `{log_path}`" for log_path in diagnostics_logs)
+          else:
+              lines.extend(["", "_No diagnostics log files were generated._"])
 
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write("\n".join(lines) + "\n")
@@ -258,11 +289,22 @@ jobs:
         shell: pwsh
         run: Write-Output "${{ steps.integration_test_config.outputs.message }}"
 
+      - name: Prepare diagnostics logging
+        id: prepare_diagnostics
+        shell: pwsh
+        run: |
+          $diagnosticsDir = Join-Path $env:GITHUB_WORKSPACE 'TestResults/diagnostics'
+          New-Item -ItemType Directory -Force -Path $diagnosticsDir | Out-Null
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "path=$diagnosticsDir"
+          Write-Output "uplink.NET diagnostics logs will be written to: $diagnosticsDir"
+
       - name: Run test suite
         id: run_tests
         env:
           TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+          UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
+          UPLINK_NET_DIAGNOSTICS_DIR: ${{ steps.prepare_diagnostics.outputs.path }}
         run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=windows-integration-tests"
 
       - name: Upload test results
@@ -273,11 +315,20 @@ jobs:
           path: TestResults/
           if-no-files-found: warn
 
+      - name: Upload diagnostics logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-logs-windows
+          path: ${{ steps.prepare_diagnostics.outputs.path }}/
+          if-no-files-found: warn
+
       - name: Summarize test results
         if: ${{ always() }}
         shell: bash
         env:
           TEST_OUTCOME: ${{ steps.run_tests.outcome }}
+          DIAGNOSTICS_DIR: ${{ steps.prepare_diagnostics.outputs.path }}
         run: |
           python <<'PY'
           import os
@@ -288,6 +339,8 @@ jobs:
           results_dir = Path("TestResults")
           trx_files = sorted(results_dir.rglob("*.trx"))
           outcome = os.environ.get("TEST_OUTCOME", "unknown")
+          diagnostics_dir = Path(os.environ["DIAGNOSTICS_DIR"])
+          diagnostics_logs = sorted(diagnostics_dir.rglob("*.log")) if diagnostics_dir.exists() else []
 
           def parse_dt(value: str):
               if not value:
@@ -347,10 +400,19 @@ jobs:
               f"| Failed | {totals['failed']} |",
               f"| Skipped | {totals['skipped']} |",
               f"| Duration | {duration} |",
+              f"| Diagnostics directory | `{diagnostics_dir}` |",
+              f"| Diagnostics log files | {len(diagnostics_logs)} |",
+              "| Diagnostics artifact | `ci-diagnostics-logs-windows` |",
           ]
 
           if not trx_files:
               lines.extend(["", "_No TRX test result files were generated._"])
+
+          if diagnostics_logs:
+              lines.extend(["", "### Diagnostics logs", ""])
+              lines.extend(f"- `{log_path}`" for log_path in diagnostics_logs)
+          else:
+              lines.extend(["", "_No diagnostics log files were generated._"])
 
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write("\n".join(lines) + "\n")
