@@ -152,18 +152,31 @@ public class MultipartUploadService : IMultipartUploadService
             var uploadResult = new PartUploadResult();
             try
             {
-                var writeResult = UplinkInterop.WithPinnedBuffer(
-                    partBytes, 0, partBytes.Length,
-                    (ptr, len) => UplinkInterop.uplink_part_upload_write(partHandle, (void*)ptr, len));
-
-                if (writeResult.error != nint.Zero)
+                var totalBytesWritten = 0;
+                while (totalBytesWritten < partBytes.Length)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeError(writeResult.error);
-                    uploadResult.Error = msg;
-                    return uploadResult;
+                    var writeResult = UplinkInterop.WithPinnedBuffer(
+                        partBytes, totalBytesWritten, partBytes.Length - totalBytesWritten,
+                        (ptr, len) => UplinkInterop.uplink_part_upload_write(partHandle, (void*)ptr, len));
+
+                    if (writeResult.error != nint.Zero)
+                    {
+                        var (msg, _) = UplinkInterop.ConsumeError(writeResult.error);
+                        uploadResult.Error = msg;
+                        return uploadResult;
+                    }
+
+                    var bytesWritten = (int)(nuint)writeResult.bytes_written;
+                    if (bytesWritten == 0)
+                    {
+                        uploadResult.Error = "Multipart upload part write returned zero bytes without reporting an error.";
+                        return uploadResult;
+                    }
+
+                    totalBytesWritten += bytesWritten;
                 }
 
-                uploadResult.BytesWritten = (uint)(nuint)writeResult.bytes_written;
+                uploadResult.BytesWritten = (uint)totalBytesWritten;
 
                 var commitErr = UplinkInterop.uplink_part_upload_commit(partHandle);
                 if (commitErr != nint.Zero)
