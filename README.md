@@ -11,6 +11,13 @@ A modern .NET 10+ wrapper library around the [storj/uplink-c](https://github.com
 - **Cross-platform** – Windows, Linux (x64 + ARM64), macOS (x64 + ARM64), Android ARM64
 - **NuGet ready** – builds a self-contained NuGet package containing all native runtimes
 
+## Wiki
+
+Additional GitHub-wiki-compatible documentation is available in [`/wiki`](wiki/Home.md):
+
+- [Home](wiki/Home.md)
+- [Documentation](wiki/Documentation.md)
+
 ## Quick start
 
 ```csharp
