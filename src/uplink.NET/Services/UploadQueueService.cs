@@ -165,21 +165,27 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
 
     private async Task ProcessLoopAsync(CancellationToken ct)
     {
-        await EnsureInitializedAsync().ConfigureAwait(false);
-        while (!ct.IsCancellationRequested)
+        try
         {
-            var entries = await _db.Table<UploadQueueEntry>()
-                .Where(e => !e.Failed)
-                .ToListAsync()
-                .ConfigureAwait(false);
-
-            foreach (var entry in entries)
+            await EnsureInitializedAsync().ConfigureAwait(false);
+            while (!ct.IsCancellationRequested)
             {
-                if (ct.IsCancellationRequested) break;
-                await ProcessEntryAsync(entry).ConfigureAwait(false);
-            }
+                var entries = await _db.Table<UploadQueueEntry>()
+                    .Where(e => !e.Failed)
+                    .ToListAsync()
+                    .ConfigureAwait(false);
 
-            await Task.Delay(PollingIntervalMs, ct).ConfigureAwait(false);
+                foreach (var entry in entries)
+                {
+                    if (ct.IsCancellationRequested) break;
+                    await ProcessEntryAsync(entry).ConfigureAwait(false);
+                }
+
+                await Task.Delay(PollingIntervalMs, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
         }
     }
 
@@ -273,6 +279,25 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
         if (_disposed) return;
         _disposed = true;
         _cts?.Cancel();
+        try
+        {
+            _processingTask?.Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (AggregateException)
+        {
+        }
+        catch (Exception)
+        {
+            // Disposal is best-effort; avoid rethrowing teardown failures
+            // (for example ObjectDisposedException while shutdown races complete)
+            // after cancellation has already been requested.
+        }
+        _cts?.Dispose();
+        _cts = null;
+        _processingTask = null;
         // Best effort synchronous close; prefer DisposeAsync when possible.
         try { _db.CloseAsync().GetAwaiter().GetResult(); } catch { }
     }
@@ -282,6 +307,13 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
         if (_disposed) return;
         _disposed = true;
         _cts?.Cancel();
+        if (_processingTask != null)
+        {
+            try { await _processingTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
+        }
+        _cts?.Dispose();
+        _cts = null;
+        _processingTask = null;
         await _db.CloseAsync().ConfigureAwait(false);
         GC.SuppressFinalize(this);
     }

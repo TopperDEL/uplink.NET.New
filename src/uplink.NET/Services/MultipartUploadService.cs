@@ -8,6 +8,8 @@ namespace uplink.NET.Services;
 
 public class MultipartUploadService : IMultipartUploadService
 {
+    private const int PartWriteChunkSize = 80 * 1024;
+
     private readonly Access _access;
 
     public MultipartUploadService(Access access)
@@ -18,27 +20,35 @@ public class MultipartUploadService : IMultipartUploadService
     public unsafe Task<UploadInfo> BeginUploadAsync(
         string bucketName, string objectKey, UploadOptions uploadOptions)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            var opts = new UplinkInterop.UplinkUploadOptions
-            {
-                expires = UplinkInterop.DateTimeToUnix(uploadOptions?.Expires)
-            };
-
-            var result = UplinkInterop.uplink_begin_upload(
-                _access._projectHandle, bucketName, objectKey, &opts);
             try
             {
-                if (result.error != nint.Zero)
+                var opts = new UplinkInterop.UplinkUploadOptions
                 {
-                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                    throw new MultipartUploadFailedException(msg);
+                    expires = UplinkInterop.DateTimeToUnix(uploadOptions?.Expires)
+                };
+
+                var result = UplinkInterop.uplink_begin_upload(
+                    projectLease.Handle, bucketName, objectKey, &opts);
+                try
+                {
+                    if (result.error != nint.Zero)
+                    {
+                        var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        throw new MultipartUploadFailedException(msg);
+                    }
+                    return UplinkInterop.MarshalUploadInfo(result.info);
                 }
-                return UplinkInterop.MarshalUploadInfo(result.info);
+                finally
+                {
+                    UplinkInterop.uplink_free_upload_info_result(result);
+                }
             }
             finally
             {
-                UplinkInterop.uplink_free_upload_info_result(result);
+                projectLease.Dispose();
             }
         });
     }
@@ -47,87 +57,103 @@ public class MultipartUploadService : IMultipartUploadService
         string bucketName, string objectKey, string uploadId,
         CommitUploadOptions commitUploadOptions)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            // Build native custom metadata
-            UplinkInterop.UplinkCustomMetadataEntry[]? entries = null;
-            GCHandle entriesPin = default;
-            nint entriesPtr = nint.Zero;
-
-            if (commitUploadOptions?.CustomMetadata?.Entries.Count > 0)
-            {
-                entries = commitUploadOptions.CustomMetadata.Entries
-                    .Select(kv => new UplinkInterop.UplinkCustomMetadataEntry
-                    {
-                        key          = Marshal.StringToCoTaskMemUTF8(kv.Key),
-                        key_length   = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Key),
-                        value        = Marshal.StringToCoTaskMemUTF8(kv.Value),
-                        value_length = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Value)
-                    })
-                    .ToArray();
-
-                entriesPin = GCHandle.Alloc(entries, GCHandleType.Pinned);
-                entriesPtr = entriesPin.AddrOfPinnedObject();
-            }
-
-            var nativeMeta = new UplinkInterop.UplinkCustomMetadata
-            {
-                entries = entriesPtr,
-                count   = entries != null ? (nuint)entries.Length : 0
-            };
-            var nativeOpts = new UplinkInterop.UplinkCommitUploadOptions
-            {
-                custom_metadata = nativeMeta
-            };
-
-            UplinkInterop.UplinkCommitUploadResult result;
             try
             {
-                result = UplinkInterop.uplink_commit_upload(
-                    _access._projectHandle, bucketName, objectKey, uploadId, &nativeOpts);
-            }
-            finally
-            {
-                if (entriesPin.IsAllocated) entriesPin.Free();
-                if (entries != null)
-                    foreach (var e in entries)
+                // Build native custom metadata
+                UplinkInterop.UplinkCustomMetadataEntry[]? entries = null;
+                GCHandle entriesPin = default;
+                nint entriesPtr = nint.Zero;
+
+                if (commitUploadOptions?.CustomMetadata?.Entries.Count > 0)
+                {
+                    entries = commitUploadOptions.CustomMetadata.Entries
+                        .Select(kv => new UplinkInterop.UplinkCustomMetadataEntry
+                        {
+                            key          = Marshal.StringToCoTaskMemUTF8(kv.Key),
+                            key_length   = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Key),
+                            value        = Marshal.StringToCoTaskMemUTF8(kv.Value),
+                            value_length = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Value)
+                        })
+                        .ToArray();
+
+                    entriesPin = GCHandle.Alloc(entries, GCHandleType.Pinned);
+                    entriesPtr = entriesPin.AddrOfPinnedObject();
+                }
+
+                var nativeMeta = new UplinkInterop.UplinkCustomMetadata
+                {
+                    entries = entriesPtr,
+                    count   = entries != null ? (nuint)entries.Length : 0
+                };
+                var nativeOpts = new UplinkInterop.UplinkCommitUploadOptions
+                {
+                    custom_metadata = nativeMeta
+                };
+
+                UplinkInterop.UplinkCommitUploadResult result;
+                try
+                {
+                    result = UplinkInterop.uplink_commit_upload(
+                        projectLease.Handle, bucketName, objectKey, uploadId, &nativeOpts);
+                }
+                finally
+                {
+                    if (entriesPin.IsAllocated) entriesPin.Free();
+                    if (entries != null)
+                        foreach (var e in entries)
+                        {
+                            Marshal.FreeCoTaskMem(e.key);
+                            Marshal.FreeCoTaskMem(e.value);
+                        }
+                }
+
+                try
+                {
+                    var commitResult = new CommitUploadResult();
+                    if (result.error != nint.Zero)
                     {
-                        Marshal.FreeCoTaskMem(e.key);
-                        Marshal.FreeCoTaskMem(e.value);
+                        var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        commitResult.Error = msg;
                     }
-            }
-
-            try
-            {
-                var commitResult = new CommitUploadResult();
-                if (result.error != nint.Zero)
-                {
-                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                    commitResult.Error = msg;
+                    else if (result.object_ != nint.Zero)
+                    {
+                        commitResult.Object = UplinkInterop.MarshalObject(result.object_);
+                    }
+                    return commitResult;
                 }
-                else if (result.object_ != nint.Zero)
+                finally
                 {
-                    commitResult.Object = UplinkInterop.MarshalObject(result.object_);
+                    UplinkInterop.uplink_free_commit_upload_result(result);
                 }
-                return commitResult;
             }
             finally
             {
-                UplinkInterop.uplink_free_commit_upload_result(result);
+                projectLease.Dispose();
             }
         });
     }
 
     public Task AbortUploadAsync(string bucketName, string objectKey, string uploadId)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            var errPtr = UplinkInterop.uplink_abort_upload(
-                _access._projectHandle, bucketName, objectKey, uploadId);
-            if (errPtr != nint.Zero)
+            try
             {
-                var (msg, _) = UplinkInterop.ConsumeError(errPtr);
-                throw new AbortUploadFailedException(msg);
+                var errPtr = UplinkInterop.uplink_abort_upload(
+                    projectLease.Handle, bucketName, objectKey, uploadId);
+                if (errPtr != nint.Zero)
+                {
+                    var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                    throw new AbortUploadFailedException(msg);
+                }
+            }
+            finally
+            {
+                projectLease.Dispose();
             }
         });
     }
@@ -136,60 +162,77 @@ public class MultipartUploadService : IMultipartUploadService
         string bucketName, string objectKey, string uploadId,
         uint partNumber, byte[] partBytes)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            var partResult = UplinkInterop.uplink_upload_part(
-                _access._projectHandle, bucketName, objectKey, uploadId, partNumber);
-
-            if (partResult.error != nint.Zero)
-            {
-                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref partResult.error);
-                UplinkInterop.uplink_free_part_upload_result(partResult);
-                throw new MultipartUploadFailedException(msg);
-            }
-
-            var partHandle = partResult.part_upload;
-            var uploadResult = new PartUploadResult();
             try
             {
-                var totalBytesWritten = 0;
-                while (totalBytesWritten < partBytes.Length)
-                {
-                    var writeResult = UplinkInterop.WithPinnedBuffer(
-                        partBytes, totalBytesWritten, partBytes.Length - totalBytesWritten,
-                        (ptr, len) => UplinkInterop.uplink_part_upload_write(partHandle, (void*)ptr, len));
+                var partResult = UplinkInterop.uplink_upload_part(
+                    projectLease.Handle, bucketName, objectKey, uploadId, partNumber);
 
-                    if (writeResult.error != nint.Zero)
+                if (partResult.error != nint.Zero)
+                {
+                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref partResult.error);
+                    UplinkInterop.uplink_free_part_upload_result(partResult);
+                    throw new MultipartUploadFailedException(msg);
+                }
+
+                var partHandle = partResult.part_upload;
+                var uploadResult = new PartUploadResult();
+                try
+                {
+                    var totalBytesWritten = 0;
+                    while (totalBytesWritten < partBytes.Length)
                     {
-                        var (msg, _) = UplinkInterop.ConsumeError(writeResult.error);
+                        var bytesRemaining = partBytes.Length - totalBytesWritten;
+                        var bytesToWrite = Math.Min(PartWriteChunkSize, bytesRemaining);
+
+                        var writeResult = UplinkInterop.WithPinnedBuffer(
+                            partBytes, totalBytesWritten, bytesToWrite,
+                            (ptr, len) => UplinkInterop.uplink_part_upload_write(partHandle, (void*)ptr, len));
+                        try
+                        {
+                            if (writeResult.error != nint.Zero)
+                            {
+                                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                                uploadResult.Error = msg;
+                                return uploadResult;
+                            }
+
+                            var bytesWritten = (int)(nuint)writeResult.bytes_written;
+                            if (bytesWritten == 0)
+                            {
+                                uploadResult.Error = "Multipart upload part write stalled: 0 bytes written without error. This may indicate a connection issue or native upload buffer problem.";
+                                return uploadResult;
+                            }
+
+                            totalBytesWritten += bytesWritten;
+                        }
+                        finally
+                        {
+                            UplinkInterop.uplink_free_write_result(writeResult);
+                        }
+                    }
+
+                    uploadResult.BytesWritten = (uint)totalBytesWritten;
+
+                    var commitErr = UplinkInterop.uplink_part_upload_commit(partHandle);
+                    if (commitErr != nint.Zero)
+                    {
+                        var (msg, _) = UplinkInterop.ConsumeError(commitErr);
                         uploadResult.Error = msg;
-                        return uploadResult;
                     }
 
-                    var bytesWritten = (int)(nuint)writeResult.bytes_written;
-                    if (bytesWritten == 0)
-                    {
-                        uploadResult.Error = "Multipart upload part write stalled: 0 bytes written without error. This may indicate a connection issue or native upload buffer problem.";
-                        return uploadResult;
-                    }
-
-                    totalBytesWritten += bytesWritten;
+                    return uploadResult;
                 }
-
-                uploadResult.BytesWritten = (uint)totalBytesWritten;
-
-                var commitErr = UplinkInterop.uplink_part_upload_commit(partHandle);
-                if (commitErr != nint.Zero)
+                finally
                 {
-                    var (msg, _) = UplinkInterop.ConsumeError(commitErr);
-                    uploadResult.Error = msg;
+                    UplinkInterop.FreePartUploadHandle(partHandle);
                 }
-
-                return uploadResult;
             }
             finally
             {
-                UplinkInterop.FreePartUploadHandle(partHandle);
+                projectLease.Dispose();
             }
         });
     }
@@ -231,6 +274,7 @@ public class MultipartUploadService : IMultipartUploadService
     public unsafe Task<UploadsList> ListUploadsAsync(
         string bucketName, ListUploadOptions listUploadOptions)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
             var prefix = Marshal.StringToCoTaskMemUTF8(listUploadOptions.Prefix ?? string.Empty);
@@ -244,7 +288,7 @@ public class MultipartUploadService : IMultipartUploadService
                 };
 
                 nint iterator = UplinkInterop.uplink_list_uploads(
-                    _access._projectHandle, bucketName, &nativeOpts);
+                    projectLease.Handle, bucketName, &nativeOpts);
 
                 var list = new UploadsList();
                 try
@@ -273,6 +317,7 @@ public class MultipartUploadService : IMultipartUploadService
             {
                 Marshal.FreeCoTaskMem(prefix);
                 Marshal.FreeCoTaskMem(cursor);
+                projectLease.Dispose();
             }
         });
     }
@@ -281,6 +326,7 @@ public class MultipartUploadService : IMultipartUploadService
         string bucketName, string objectKey, string uploadId,
         ListUploadPartsOptions listUploadPartOptions)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
             var nativeOpts = new UplinkInterop.UplinkListUploadPartsOptions
@@ -289,7 +335,7 @@ public class MultipartUploadService : IMultipartUploadService
             };
 
             nint iterator = UplinkInterop.uplink_list_upload_parts(
-                _access._projectHandle, bucketName, objectKey, uploadId, &nativeOpts);
+                projectLease.Handle, bucketName, objectKey, uploadId, &nativeOpts);
 
             var list = new UploadPartsList();
             try
@@ -310,6 +356,7 @@ public class MultipartUploadService : IMultipartUploadService
             finally
             {
                 UplinkInterop.uplink_free_part_iterator(iterator);
+                projectLease.Dispose();
             }
 
             return list;

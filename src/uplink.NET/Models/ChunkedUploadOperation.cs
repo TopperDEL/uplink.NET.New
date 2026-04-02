@@ -9,6 +9,7 @@ namespace uplink.NET.Models;
 public class ChunkedUploadOperation : IDisposable
 {
     private nint _uploadHandle;
+    private Access.ProjectHandleLease? _projectLease;
     private bool _committed;
     private bool _disposed;
 
@@ -16,10 +17,12 @@ public class ChunkedUploadOperation : IDisposable
     public bool Failed { get; private set; }
     public string? ErrorMessage { get; private set; }
 
-    internal ChunkedUploadOperation(nint uploadHandle, string objectName)
+    internal ChunkedUploadOperation(nint uploadHandle, string objectName, Access.ProjectHandleLease projectLease)
     {
+        ArgumentNullException.ThrowIfNull(projectLease);
         _uploadHandle = uploadHandle;
         ObjectName    = objectName;
+        _projectLease = projectLease;
     }
 
     /// <summary>Writes the supplied bytes to the upload stream.</summary>
@@ -35,13 +38,19 @@ public class ChunkedUploadOperation : IDisposable
             var writeResult = UplinkInterop.WithPinnedBuffer(
                 chunk, 0, chunk.Length,
                 (ptr, len) => UplinkInterop.uplink_upload_write(_uploadHandle, (void*)ptr, len));
-
-            if (writeResult.error != nint.Zero)
+            try
             {
-                var (msg, _) = UplinkInterop.ConsumeError(writeResult.error);
-                Failed       = true;
-                ErrorMessage = msg;
-                return false;
+                if (writeResult.error != nint.Zero)
+                {
+                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                    Failed       = true;
+                    ErrorMessage = msg;
+                    return false;
+                }
+            }
+            finally
+            {
+                UplinkInterop.uplink_free_write_result(writeResult);
             }
         }
 
@@ -124,5 +133,7 @@ public class ChunkedUploadOperation : IDisposable
 
         UplinkInterop.FreeUploadHandle(_uploadHandle);
         _uploadHandle = nint.Zero;
+        _projectLease?.Dispose();
+        _projectLease = null;
     }
 }

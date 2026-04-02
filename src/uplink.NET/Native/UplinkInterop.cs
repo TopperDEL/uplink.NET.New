@@ -495,6 +495,12 @@ internal static unsafe partial class UplinkInterop
     [LibraryImport(LibName)]
     internal static partial void uplink_free_error(nint error); // UplinkError*
 
+    [LibraryImport(LibName)]
+    internal static partial void uplink_free_write_result(UplinkWriteResult result);
+
+    [LibraryImport(LibName)]
+    internal static partial void uplink_free_read_result(UplinkReadResult result);
+
     // ── Helpers ───────────────────────────────────────────────────────────────
     /// <summary>Reads error message and code from a native UplinkError*, then frees it.</summary>
     internal static (string message, int code) ConsumeError(nint errorPtr)
@@ -516,16 +522,6 @@ internal static unsafe partial class UplinkInterop
         var result = ConsumeError(errorPtr);
         errorPtr = nint.Zero;
         return result;
-    }
-
-    internal static void CloseProjectHandle(nint project)
-    {
-        if (project == nint.Zero)
-            return;
-
-        var errPtr = uplink_close_project(project);
-        if (errPtr != nint.Zero)
-            uplink_free_error(errPtr);
     }
 
     internal static void FreeProjectHandle(nint project)
@@ -550,16 +546,6 @@ internal static unsafe partial class UplinkInterop
     {
         if (download != nint.Zero)
             uplink_free_download_result(new UplinkDownloadResult { download = download, error = nint.Zero });
-    }
-
-    internal static void CloseDownloadHandle(nint download)
-    {
-        if (download == nint.Zero)
-            return;
-
-        var errPtr = uplink_close_download(download);
-        if (errPtr != nint.Zero)
-            uplink_free_error(errPtr);
     }
 
     internal static void FreePartUploadHandle(nint partUpload)
