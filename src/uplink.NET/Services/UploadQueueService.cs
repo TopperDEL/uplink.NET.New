@@ -14,6 +14,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
     private const int PartSize          = 5 * 1024 * 1024; // 5 MB per multipart part
     private const int PollingIntervalMs = 2_000;            // poll interval for the background loop
     private const string QueueTraceVariableName = "UPLINK_NET_QUEUE_TRACE";
+    private const TaskCreationOptions UploadCompletionTaskCreationOptions = TaskCreationOptions.RunContinuationsAsynchronously;
 
     private readonly SQLiteAsyncConnection _db;
     private readonly Config? _accessConfig;
@@ -271,7 +272,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
                 meta!,
                 startImmediately: false).ConfigureAwait(false);
 
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var tcs = new TaskCompletionSource<bool>(UploadCompletionTaskCreationOptions);
             uploadOp.UploadOperationEnded += op =>
             {
                 Trace($"Queued upload ended id={entry.Id} key={entry.Key} completed={op.Completed} failed={op.Failed} cancelled={op.Cancelled} error={op.ErrorMessage ?? string.Empty}");

@@ -104,6 +104,8 @@ internal static class IntegrationTestEnvironment
         var config = new Config
         {
             TempDirectory = tempDirectory,
+            // When diagnostics are enabled in integration runs, serialize native operations too so
+            // queue/background Access instances follow the same diagnostic lifetime policy.
             SerializeNativeOperations = IsNativeSerializationEnabled() || IsDiagnosticsEnabled()
         };
 
