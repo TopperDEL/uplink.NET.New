@@ -466,7 +466,7 @@ public class ObjectService : IObjectService
             {
                 var (msg, code) = UplinkInterop.ConsumeError(errPtr);
                 trace?.NativeError(msg, code);
-                throw new IOException($"Failed to set custom metadata on Storj upload: {msg}");
+                throw new IOException($"Failed to set custom metadata: {msg}");
             }
         }
 

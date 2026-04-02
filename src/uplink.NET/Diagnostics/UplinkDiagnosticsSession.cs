@@ -76,7 +76,7 @@ internal sealed class UplinkDiagnosticsSession
             builder.Append(" stage=").Append(stage);
 
             if (duration.HasValue)
-                builder.Append(" durationMs=").Append(duration.Value.TotalMilliseconds.ToString("0.000###", System.Globalization.CultureInfo.InvariantCulture));
+                builder.Append(" durationMs=").Append(duration.Value.TotalMilliseconds.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture));
 
             if (!string.IsNullOrEmpty(context))
                 builder.Append(" context=\"").Append(Escape(context)).Append('"');
