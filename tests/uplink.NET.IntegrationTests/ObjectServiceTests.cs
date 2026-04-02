@@ -67,6 +67,45 @@ public class ObjectServiceTests
         }
     }
 
+    [StorjIntegrationFact]
+    public async Task UploadObject_WithExpiry_PersistsExpirationMetadata()
+    {
+        using var context = IntegrationTestEnvironment.CreateContext();
+        var bucketService = new BucketService(context.Access);
+        var objectService = new ObjectService(context.Access);
+        var objectKey = StorjTestHelper.CreateObjectKey("upload-with-expiry");
+        var payload = IntegrationTestEnvironment.CreatePayload(256);
+        var requestedExpiry = DateTimeOffset.UtcNow.AddMinutes(10);
+        var expectedExpiry = DateTimeOffset.FromUnixTimeSeconds(requestedExpiry.ToUnixTimeSeconds()).UtcDateTime;
+
+        try
+        {
+            await bucketService.EnsureBucketAsync(context.BucketName);
+
+            var upload = await objectService.UploadObjectAsync(
+                context.BucketName,
+                objectKey,
+                payload,
+                new UploadOptions { Expires = requestedExpiry.UtcDateTime },
+                startImmediately: false);
+
+            var uploadTask = upload.StartUploadAsync();
+            await StorjTestHelper.RequireStarted(uploadTask, "upload with expiry");
+
+            Assert.True(upload.Completed, upload.ErrorMessage);
+            Assert.False(upload.Failed);
+            Assert.False(upload.Cancelled);
+
+            var storedObject = await objectService.GetObjectAsync(context.BucketName, objectKey);
+            Assert.Equal(expectedExpiry, storedObject.Expires);
+            Assert.Equal(expectedExpiry, storedObject.SystemMetadata.Expires);
+        }
+        finally
+        {
+            await StorjTestHelper.DeleteObjectIfPresentAsync(objectService, context.BucketName, objectKey);
+        }
+    }
+
     [StorjIntegrationTheory]
     [MemberData(nameof(StreamUploadSizes))]
     public async Task UploadObject_Uploads_ExpectedBytesAsStream(int sizeInBytes)
