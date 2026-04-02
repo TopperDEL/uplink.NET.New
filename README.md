@@ -1,5 +1,8 @@
 # uplink.NET
 
+[![Tests](https://github.com/TopperDEL/uplink.NET.New/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/TopperDEL/uplink.NET.New/actions/workflows/ci.yml)
+[![Release](https://github.com/TopperDEL/uplink.NET.New/actions/workflows/build.yml/badge.svg)](https://github.com/TopperDEL/uplink.NET.New/actions/workflows/build.yml)
+
 A modern .NET 10+ wrapper library around the [storj/uplink-c](https://github.com/storj/uplink-c) C library, providing idiomatic async .NET access to the [Storj](https://storj.io) decentralized cloud storage network.
 
 ## Features
