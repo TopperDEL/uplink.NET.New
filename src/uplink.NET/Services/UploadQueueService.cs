@@ -286,9 +286,9 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
         catch (OperationCanceledException)
         {
         }
-        catch
+        catch (Exception)
         {
-            // Disposal is best-effort; avoid throwing from teardown if the background loop faults while cancellation is in progress.
+            // Disposal is best-effort; avoid rethrowing teardown failures (for example ObjectDisposedException while shutdown races complete) after cancellation has already been requested.
         }
         _cts?.Dispose();
         _cts = null;
