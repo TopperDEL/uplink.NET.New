@@ -19,9 +19,10 @@ public class ChunkedUploadOperation : IDisposable
 
     internal ChunkedUploadOperation(nint uploadHandle, string objectName, Access.ProjectHandleLease projectLease)
     {
+        ArgumentNullException.ThrowIfNull(projectLease);
         _uploadHandle = uploadHandle;
         ObjectName    = objectName;
-        _projectLease = projectLease ?? throw new ArgumentNullException(nameof(projectLease));
+        _projectLease = projectLease;
     }
 
     /// <summary>Writes the supplied bytes to the upload stream.</summary>
