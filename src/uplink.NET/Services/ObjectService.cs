@@ -144,11 +144,16 @@ public class ObjectService : IObjectService
         {
             if (uploadHandle != nint.Zero)
             {
-                var abortErr = UplinkInterop.uplink_upload_abort(uploadHandle);
-                if (abortErr != nint.Zero)
-                    UplinkInterop.ConsumeError(abortErr);
-
-                UplinkInterop.FreeUploadHandle(uploadHandle);
+                try
+                {
+                    var abortErr = UplinkInterop.uplink_upload_abort(uploadHandle);
+                    if (abortErr != nint.Zero)
+                        UplinkInterop.ConsumeError(abortErr);
+                }
+                finally
+                {
+                    UplinkInterop.FreeUploadHandle(uploadHandle);
+                }
             }
 
             projectLease.Dispose();

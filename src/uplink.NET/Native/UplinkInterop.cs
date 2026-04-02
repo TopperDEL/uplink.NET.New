@@ -534,11 +534,16 @@ internal static unsafe partial class UplinkInterop
         {
             lock (NativeHandleCleanupSync)
             {
-                var closeErrorPtr = uplink_close_project(project);
-                if (closeErrorPtr != nint.Zero)
-                    ConsumeError(closeErrorPtr);
-
-                uplink_free_project_result(new UplinkProjectResult { project = project, error = nint.Zero });
+                try
+                {
+                    var closeErrorPtr = uplink_close_project(project);
+                    if (closeErrorPtr != nint.Zero)
+                        ConsumeError(closeErrorPtr);
+                }
+                finally
+                {
+                    uplink_free_project_result(new UplinkProjectResult { project = project, error = nint.Zero });
+                }
             }
         }
     }
@@ -567,11 +572,16 @@ internal static unsafe partial class UplinkInterop
         {
             lock (NativeHandleCleanupSync)
             {
-                var closeErrorPtr = uplink_close_download(download);
-                if (closeErrorPtr != nint.Zero)
-                    ConsumeError(closeErrorPtr);
-
-                uplink_free_download_result(new UplinkDownloadResult { download = download, error = nint.Zero });
+                try
+                {
+                    var closeErrorPtr = uplink_close_download(download);
+                    if (closeErrorPtr != nint.Zero)
+                        ConsumeError(closeErrorPtr);
+                }
+                finally
+                {
+                    uplink_free_download_result(new UplinkDownloadResult { download = download, error = nint.Zero });
+                }
             }
         }
     }

@@ -260,6 +260,8 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
                 meta!,
                 startImmediately: false).ConfigureAwait(false);
 
+            // Keep queue continuations off the native/upload callback thread so a restart request
+            // cannot be blocked behind inline continuation work.
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             uploadOp.UploadOperationEnded += op =>
             {
@@ -271,6 +273,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
 
             var uploadTask = uploadOp.StartUploadAsync() ?? Task.CompletedTask;
             bool success = await tcs.Task.ConfigureAwait(false);
+            // Wait for final native cleanup and lease release before disposing the per-entry Access.
             await uploadTask.ConfigureAwait(false);
 
             if (success)
