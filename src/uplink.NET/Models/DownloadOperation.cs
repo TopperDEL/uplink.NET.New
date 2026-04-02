@@ -13,11 +13,12 @@ public class DownloadOperation : IDisposable
 {
     private const int ChunkSize = 80 * 1024; // 80 KB
 
-    private readonly nint _projectHandle;
+    private readonly Access _access;
     private readonly string _bucketName;
     private readonly DownloadOptions _options;
 
     private bool _cancelRequested;
+    private Access.ProjectHandleLease? _projectLease;
 
     public string ObjectName { get; }
     public byte[] DownloadedBytes { get; private set; } = Array.Empty<byte>();
@@ -36,18 +37,36 @@ public class DownloadOperation : IDisposable
     public event DownloadOperationEnded? DownloadOperationEnded;
 
     internal DownloadOperation(
-        nint projectHandle,
+        Access access,
         string bucketName,
         string objectName,
         DownloadOptions options)
     {
-        _projectHandle = projectHandle;
+        _access = access;
         _bucketName    = bucketName;
         ObjectName     = objectName;
         _options       = options;
     }
 
-    public Task? StartDownloadAsync() => Task.Run(PerformDownloadAsync);
+    public Task? StartDownloadAsync()
+    {
+        if (_projectLease != null)
+            throw new InvalidOperationException("The download operation has already been started.");
+
+        var projectLease = _access.AcquireProjectLease();
+
+        try
+        {
+            _projectLease = projectLease;
+            return Task.Run(PerformDownloadAsync);
+        }
+        catch
+        {
+            projectLease.Dispose();
+            _projectLease = null;
+            throw;
+        }
+    }
 
     private async Task PerformDownloadAsync()
     {
@@ -112,6 +131,8 @@ public class DownloadOperation : IDisposable
         finally
         {
             UplinkInterop.FreeDownloadHandle(downloadHandle);
+            _projectLease?.Dispose();
+            _projectLease = null;
         }
     }
 
@@ -123,7 +144,7 @@ public class DownloadOperation : IDisposable
             length = _options.Length
         };
         var result = UplinkInterop.uplink_download_object(
-            _projectHandle, _bucketName, ObjectName, &opts);
+            _projectLease!.Handle, _bucketName, ObjectName, &opts);
         if (result.error != nint.Zero)
         {
             var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);

@@ -15,6 +15,9 @@ public class Access : IDisposable
     internal nint _projectHandle;
 
     private readonly Config? _config;
+    private readonly object _lifetimeSync = new();
+    private int _activeProjectLeases;
+    private bool _disposeRequested;
     private bool _disposed;
 
     /// <summary>Open a project using the supplied access-grant string.</summary>
@@ -197,13 +200,22 @@ public class Access : IDisposable
         ArgumentNullException.ThrowIfNull(childAccess);
         childAccess.ThrowIfDisposed();
 
+        var projectLease = AcquireProjectLease();
+
         return Task.Run(() =>
         {
-            var errPtr = UplinkInterop.uplink_revoke_access(_projectHandle, childAccess._accessHandle);
-            if (errPtr != nint.Zero)
+            try
             {
-                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
-                throw new AccessException($"Failed to revoke access grant: {msg}");
+                var errPtr = UplinkInterop.uplink_revoke_access(projectLease.Handle, childAccess._accessHandle);
+                if (errPtr != nint.Zero)
+                {
+                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
+                    throw new AccessException($"Failed to revoke access grant: {msg}");
+                }
+            }
+            finally
+            {
+                projectLease.Dispose();
             }
         });
     }
@@ -294,14 +306,56 @@ public class Access : IDisposable
 
     private void ThrowIfDisposed()
     {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(Access));
+        lock (_lifetimeSync)
+        {
+            ThrowIfDisposedNoLock();
+        }
     }
 
     protected virtual void Dispose(bool disposing)
     {
-        if (_disposed) return;
-        _disposed = true;
+        lock (_lifetimeSync)
+        {
+            if (_disposeRequested)
+                return;
+
+            _disposeRequested = true;
+
+            if (_activeProjectLeases == 0)
+                ReleaseHandlesNoLock();
+        }
+    }
+
+    internal ProjectHandleLease AcquireProjectLease()
+    {
+        lock (_lifetimeSync)
+        {
+            ThrowIfDisposedNoLock();
+
+            if (_projectHandle == nint.Zero)
+                throw new ObjectDisposedException(nameof(Access));
+
+            _activeProjectLeases++;
+            return new ProjectHandleLease(this, _projectHandle);
+        }
+    }
+
+    private void ReleaseProjectLease()
+    {
+        lock (_lifetimeSync)
+        {
+            if (_activeProjectLeases > 0)
+                _activeProjectLeases--;
+
+            if (_disposeRequested && _activeProjectLeases == 0)
+                ReleaseHandlesNoLock();
+        }
+    }
+
+    private void ReleaseHandlesNoLock()
+    {
+        if (_disposed)
+            return;
 
         if (_projectHandle != nint.Zero)
         {
@@ -314,6 +368,14 @@ public class Access : IDisposable
             UplinkInterop.FreeAccessHandle(_accessHandle);
             _accessHandle = nint.Zero;
         }
+
+        _disposed = true;
+    }
+
+    private void ThrowIfDisposedNoLock()
+    {
+        if (_disposeRequested || _disposed)
+            throw new ObjectDisposedException(nameof(Access));
     }
 
     public void Dispose()
@@ -323,4 +385,23 @@ public class Access : IDisposable
     }
 
     ~Access() => Dispose(false);
+
+    internal sealed class ProjectHandleLease : IDisposable
+    {
+        private Access? _owner;
+
+        internal ProjectHandleLease(Access owner, nint handle)
+        {
+            _owner = owner;
+            Handle = handle;
+        }
+
+        internal nint Handle { get; }
+
+        public void Dispose()
+        {
+            var owner = System.Threading.Interlocked.Exchange(ref _owner, null);
+            owner?.ReleaseProjectLease();
+        }
+    }
 }

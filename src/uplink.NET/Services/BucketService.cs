@@ -16,28 +16,106 @@ public class BucketService : IBucketService
     }
 
     public Task<Bucket> CreateBucketAsync(string bucketName)
-        => Task.Run(() => CreateBucket(bucketName));
+    {
+        var projectLease = _access.AcquireProjectLease();
+        return Task.Run(() =>
+        {
+            try
+            {
+                return CreateBucket(projectLease.Handle, bucketName);
+            }
+            finally
+            {
+                projectLease.Dispose();
+            }
+        });
+    }
 
     public Task<Bucket> EnsureBucketAsync(string bucketName)
-        => Task.Run(() => EnsureBucket(bucketName));
+    {
+        var projectLease = _access.AcquireProjectLease();
+        return Task.Run(() =>
+        {
+            try
+            {
+                return EnsureBucket(projectLease.Handle, bucketName);
+            }
+            finally
+            {
+                projectLease.Dispose();
+            }
+        });
+    }
 
     public Task<Bucket> GetBucketAsync(string bucketName)
-        => Task.Run(() => StatBucket(bucketName));
+    {
+        var projectLease = _access.AcquireProjectLease();
+        return Task.Run(() =>
+        {
+            try
+            {
+                return StatBucket(projectLease.Handle, bucketName);
+            }
+            finally
+            {
+                projectLease.Dispose();
+            }
+        });
+    }
 
     public Task<BucketList> ListBucketsAsync(ListBucketsOptions listBucketsOptions)
-        => Task.Run(() => ListBuckets(listBucketsOptions));
+    {
+        var projectLease = _access.AcquireProjectLease();
+        return Task.Run(() =>
+        {
+            try
+            {
+                return ListBuckets(projectLease.Handle, listBucketsOptions);
+            }
+            finally
+            {
+                projectLease.Dispose();
+            }
+        });
+    }
 
     public Task DeleteBucketAsync(string bucketName)
-        => Task.Run(() => DeleteBucket(bucketName));
+    {
+        var projectLease = _access.AcquireProjectLease();
+        return Task.Run(() =>
+        {
+            try
+            {
+                DeleteBucket(projectLease.Handle, bucketName);
+            }
+            finally
+            {
+                projectLease.Dispose();
+            }
+        });
+    }
 
     public Task DeleteBucketWithObjectsAsync(string bucketName)
-        => Task.Run(() => DeleteBucketWithObjects(bucketName));
+    {
+        var projectLease = _access.AcquireProjectLease();
+        return Task.Run(() =>
+        {
+            try
+            {
+                DeleteBucketWithObjects(projectLease.Handle, bucketName);
+            }
+            finally
+            {
+                projectLease.Dispose();
+            }
+        });
+    }
 
     // ── Private sync implementations ─────────────────────────────────────────
 
-    private Bucket CreateBucket(string bucketName)
+    private Bucket CreateBucket(nint projectHandle, string bucketName)
     {
-        var result = UplinkInterop.uplink_create_bucket(_access._projectHandle, bucketName);
+        var result = UplinkInterop.uplink_create_bucket(projectHandle, bucketName);
         try
         {
             if (result.error != nint.Zero)
@@ -53,9 +131,9 @@ public class BucketService : IBucketService
         }
     }
 
-    private Bucket EnsureBucket(string bucketName)
+    private Bucket EnsureBucket(nint projectHandle, string bucketName)
     {
-        var result = UplinkInterop.uplink_ensure_bucket(_access._projectHandle, bucketName);
+        var result = UplinkInterop.uplink_ensure_bucket(projectHandle, bucketName);
         try
         {
             if (result.error != nint.Zero)
@@ -71,9 +149,9 @@ public class BucketService : IBucketService
         }
     }
 
-    private Bucket StatBucket(string bucketName)
+    private Bucket StatBucket(nint projectHandle, string bucketName)
     {
-        var result = UplinkInterop.uplink_stat_bucket(_access._projectHandle, bucketName);
+        var result = UplinkInterop.uplink_stat_bucket(projectHandle, bucketName);
         try
         {
             if (result.error != nint.Zero)
@@ -89,7 +167,7 @@ public class BucketService : IBucketService
         }
     }
 
-    private unsafe BucketList ListBuckets(ListBucketsOptions opts)
+    private unsafe BucketList ListBuckets(nint projectHandle, ListBucketsOptions opts)
     {
         var nativeOpts = new UplinkInterop.UplinkListBucketsOptions
         {
@@ -98,7 +176,7 @@ public class BucketService : IBucketService
                 : nint.Zero
         };
 
-        nint iterator = UplinkInterop.uplink_list_buckets(_access._projectHandle, &nativeOpts);
+        nint iterator = UplinkInterop.uplink_list_buckets(projectHandle, &nativeOpts);
 
         if (nativeOpts.cursor != nint.Zero)
             Marshal.FreeCoTaskMem(nativeOpts.cursor);
@@ -127,9 +205,9 @@ public class BucketService : IBucketService
         return list;
     }
 
-    private void DeleteBucket(string bucketName)
+    private void DeleteBucket(nint projectHandle, string bucketName)
     {
-        var result = UplinkInterop.uplink_delete_bucket(_access._projectHandle, bucketName);
+        var result = UplinkInterop.uplink_delete_bucket(projectHandle, bucketName);
         try
         {
             if (result.error != nint.Zero)
@@ -144,9 +222,9 @@ public class BucketService : IBucketService
         }
     }
 
-    private void DeleteBucketWithObjects(string bucketName)
+    private void DeleteBucketWithObjects(nint projectHandle, string bucketName)
     {
-        var result = UplinkInterop.uplink_delete_bucket_with_objects(_access._projectHandle, bucketName);
+        var result = UplinkInterop.uplink_delete_bucket_with_objects(projectHandle, bucketName);
         try
         {
             if (result.error != nint.Zero)

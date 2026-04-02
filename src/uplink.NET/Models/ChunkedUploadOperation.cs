@@ -9,6 +9,7 @@ namespace uplink.NET.Models;
 public class ChunkedUploadOperation : IDisposable
 {
     private nint _uploadHandle;
+    private Access.ProjectHandleLease? _projectLease;
     private bool _committed;
     private bool _disposed;
 
@@ -16,10 +17,11 @@ public class ChunkedUploadOperation : IDisposable
     public bool Failed { get; private set; }
     public string? ErrorMessage { get; private set; }
 
-    internal ChunkedUploadOperation(nint uploadHandle, string objectName)
+    internal ChunkedUploadOperation(nint uploadHandle, string objectName, Access.ProjectHandleLease projectLease)
     {
         _uploadHandle = uploadHandle;
         ObjectName    = objectName;
+        _projectLease = projectLease ?? throw new ArgumentNullException(nameof(projectLease));
     }
 
     /// <summary>Writes the supplied bytes to the upload stream.</summary>
@@ -124,5 +126,7 @@ public class ChunkedUploadOperation : IDisposable
 
         UplinkInterop.FreeUploadHandle(_uploadHandle);
         _uploadHandle = nint.Zero;
+        _projectLease?.Dispose();
+        _projectLease = null;
     }
 }

@@ -76,7 +76,7 @@ public class ObjectService : IObjectService
         UploadOptions? uploadOptions, CustomMetadata? customMetadata, bool startImmediately)
     {
         var op = new UploadOperation(
-            _access._projectHandle,
+            _access,
             bucketName,
             key,
             objectData,
@@ -95,6 +95,7 @@ public class ObjectService : IObjectService
         string bucketName, string key,
         UploadOptions? uploadOptions, CustomMetadata? customMetadata)
     {
+        var projectLease = _access.AcquireProjectLease();
         var opts = new UplinkInterop.UplinkUploadOptions
         {
             expires = UplinkInterop.DateTimeToUnix(uploadOptions?.Expires)
@@ -102,12 +103,13 @@ public class ObjectService : IObjectService
 
         UplinkInterop.UplinkUploadResult uploadResult;
         uploadResult = UplinkInterop.uplink_upload_object(
-            _access._projectHandle, bucketName, key, &opts);
+            projectLease.Handle, bucketName, key, &opts);
 
         if (uploadResult.error != nint.Zero)
         {
             var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref uploadResult.error);
             UplinkInterop.uplink_free_upload_result(uploadResult);
+            projectLease.Dispose();
             throw new Exception($"Failed to begin upload: {msg}");
         }
 
@@ -117,7 +119,7 @@ public class ObjectService : IObjectService
         if (customMetadata?.Entries.Count > 0)
             SetCustomMetadataNative(uploadHandle, customMetadata);
 
-        return Task.FromResult(new ChunkedUploadOperation(uploadHandle, key));
+        return Task.FromResult(new ChunkedUploadOperation(uploadHandle, key, projectLease));
     }
 
     // ── List ──────────────────────────────────────────────────────────────────
@@ -128,53 +130,61 @@ public class ObjectService : IObjectService
     public unsafe Task<ObjectList> ListObjectsAsync(
         string bucketName, ListObjectsOptions opts)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            var prefix  = Marshal.StringToCoTaskMemUTF8(opts.Prefix ?? string.Empty);
-            var cursor  = Marshal.StringToCoTaskMemUTF8(opts.Cursor ?? string.Empty);
-            var bucketPtr = Marshal.StringToCoTaskMemUTF8(bucketName);
             try
             {
-                var nativeOpts = new UplinkInterop.UplinkListObjectsOptions
-                {
-                    prefix    = prefix,
-                    cursor    = cursor,
-                    recursive = opts.Recursive,
-                    system    = opts.System,
-                    custom    = opts.Custom
-                };
-
-                nint iterator = UplinkInterop.uplink_list_objects(
-                    _access._projectHandle, bucketPtr, &nativeOpts);
-
-                var list = new ObjectList();
+                var prefix  = Marshal.StringToCoTaskMemUTF8(opts.Prefix ?? string.Empty);
+                var cursor  = Marshal.StringToCoTaskMemUTF8(opts.Cursor ?? string.Empty);
+                var bucketPtr = Marshal.StringToCoTaskMemUTF8(bucketName);
                 try
                 {
-                    while (UplinkInterop.uplink_object_iterator_next(iterator))
+                    var nativeOpts = new UplinkInterop.UplinkListObjectsOptions
                     {
-                        nint objPtr = UplinkInterop.uplink_object_iterator_item(iterator);
-                        list.Items.Add(UplinkInterop.MarshalObject(objPtr));
+                        prefix    = prefix,
+                        cursor    = cursor,
+                        recursive = opts.Recursive,
+                        system    = opts.System,
+                        custom    = opts.Custom
+                    };
+
+                    nint iterator = UplinkInterop.uplink_list_objects(
+                        projectLease.Handle, bucketPtr, &nativeOpts);
+
+                    var list = new ObjectList();
+                    try
+                    {
+                        while (UplinkInterop.uplink_object_iterator_next(iterator))
+                        {
+                            nint objPtr = UplinkInterop.uplink_object_iterator_item(iterator);
+                            list.Items.Add(UplinkInterop.MarshalObject(objPtr));
+                        }
+
+                        nint errPtr = UplinkInterop.uplink_object_iterator_err(iterator);
+                        if (errPtr != nint.Zero)
+                        {
+                            var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                            throw new ObjectListException(msg);
+                        }
+                    }
+                    finally
+                    {
+                        UplinkInterop.uplink_free_object_iterator(iterator);
                     }
 
-                    nint errPtr = UplinkInterop.uplink_object_iterator_err(iterator);
-                    if (errPtr != nint.Zero)
-                    {
-                        var (msg, _) = UplinkInterop.ConsumeError(errPtr);
-                        throw new ObjectListException(msg);
-                    }
+                    return list;
                 }
                 finally
                 {
-                    UplinkInterop.uplink_free_object_iterator(iterator);
+                    Marshal.FreeCoTaskMem(prefix);
+                    Marshal.FreeCoTaskMem(cursor);
+                    Marshal.FreeCoTaskMem(bucketPtr);
                 }
-
-                return list;
             }
             finally
             {
-                Marshal.FreeCoTaskMem(prefix);
-                Marshal.FreeCoTaskMem(cursor);
-                Marshal.FreeCoTaskMem(bucketPtr);
+                projectLease.Dispose();
             }
         });
     }
@@ -183,21 +193,29 @@ public class ObjectService : IObjectService
 
     public Task<StorjObject> GetObjectAsync(string bucketName, string key)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            var result = UplinkInterop.uplink_stat_object(_access._projectHandle, bucketName, key);
             try
             {
-                if (result.error != nint.Zero)
+                var result = UplinkInterop.uplink_stat_object(projectLease.Handle, bucketName, key);
+                try
                 {
-                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                    throw new ObjectNotFoundException(key, msg);
+                    if (result.error != nint.Zero)
+                    {
+                        var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        throw new ObjectNotFoundException(key, msg);
+                    }
+                    return UplinkInterop.MarshalObject(result.object_);
                 }
-                return UplinkInterop.MarshalObject(result.object_);
+                finally
+                {
+                    UplinkInterop.uplink_free_object_result(result);
+                }
             }
             finally
             {
-                UplinkInterop.uplink_free_object_result(result);
+                projectLease.Dispose();
             }
         });
     }
@@ -212,14 +230,17 @@ public class ObjectService : IObjectService
         string key,
         DownloadOptions downloadOptions)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
             var handle = nint.Zero;
+            var leaseTransferred = false;
             try
             {
-                handle = OpenDownloadHandle(_access._projectHandle, bucketName, key, downloadOptions);
+                handle = OpenDownloadHandle(projectLease.Handle, bucketName, key, downloadOptions);
                 var length = GetDownloadLength(handle, downloadOptions);
-                var stream = new DownloadStream(handle, length);
+                var stream = new DownloadStream(handle, length, projectLease);
+                leaseTransferred = true;
                 handle = nint.Zero;
                 return stream;
             }
@@ -227,6 +248,9 @@ public class ObjectService : IObjectService
             {
                 if (handle != nint.Zero)
                     UplinkInterop.FreeDownloadHandle(handle);
+
+                if (!leaseTransferred)
+                    projectLease.Dispose();
             }
         });
     }
@@ -242,7 +266,7 @@ public class ObjectService : IObjectService
         DownloadOptions downloadOptions, bool startImmediately)
     {
         var op = new DownloadOperation(
-            _access._projectHandle, bucketName, key, downloadOptions);
+            _access, bucketName, key, downloadOptions);
 
         if (startImmediately)
             op.StartDownloadAsync();
@@ -256,29 +280,37 @@ public class ObjectService : IObjectService
         string destinationBucketName,
         string destinationKey)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            var result = UplinkInterop.uplink_copy_object(
-                _access._projectHandle,
-                sourceBucketName,
-                sourceKey,
-                destinationBucketName,
-                destinationKey,
-                nint.Zero);
-
             try
             {
-                if (result.error != nint.Zero)
-                {
-                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                    throw new IOException($"Failed to copy Storj object: {msg}");
-                }
+                var result = UplinkInterop.uplink_copy_object(
+                    projectLease.Handle,
+                    sourceBucketName,
+                    sourceKey,
+                    destinationBucketName,
+                    destinationKey,
+                    nint.Zero);
 
-                return UplinkInterop.MarshalObject(result.object_);
+                try
+                {
+                    if (result.error != nint.Zero)
+                    {
+                        var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        throw new IOException($"Failed to copy Storj object: {msg}");
+                    }
+
+                    return UplinkInterop.MarshalObject(result.object_);
+                }
+                finally
+                {
+                    UplinkInterop.uplink_free_object_result(result);
+                }
             }
             finally
             {
-                UplinkInterop.uplink_free_object_result(result);
+                projectLease.Dispose();
             }
         });
     }
@@ -289,20 +321,28 @@ public class ObjectService : IObjectService
         string destinationBucketName,
         string destinationKey)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            var errPtr = UplinkInterop.uplink_move_object(
-                _access._projectHandle,
-                sourceBucketName,
-                sourceKey,
-                destinationBucketName,
-                destinationKey,
-                nint.Zero);
-
-            if (errPtr != nint.Zero)
+            try
             {
-                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
-                throw new IOException($"Failed to move Storj object: {msg}");
+                var errPtr = UplinkInterop.uplink_move_object(
+                    projectLease.Handle,
+                    sourceBucketName,
+                    sourceKey,
+                    destinationBucketName,
+                    destinationKey,
+                    nint.Zero);
+
+                if (errPtr != nint.Zero)
+                {
+                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
+                    throw new IOException($"Failed to move Storj object: {msg}");
+                }
+            }
+            finally
+            {
+                projectLease.Dispose();
             }
         });
     }
@@ -311,20 +351,28 @@ public class ObjectService : IObjectService
 
     public Task DeleteObjectAsync(string bucketName, string key)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            var result = UplinkInterop.uplink_delete_object(_access._projectHandle, bucketName, key);
             try
             {
-                if (result.error != nint.Zero)
+                var result = UplinkInterop.uplink_delete_object(projectLease.Handle, bucketName, key);
+                try
                 {
-                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                    throw new ObjectNotFoundException(key, msg);
+                    if (result.error != nint.Zero)
+                    {
+                        var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        throw new ObjectNotFoundException(key, msg);
+                    }
+                }
+                finally
+                {
+                    UplinkInterop.uplink_free_object_result(result);
                 }
             }
             finally
             {
-                UplinkInterop.uplink_free_object_result(result);
+                projectLease.Dispose();
             }
         });
     }

@@ -233,6 +233,82 @@ public class ObjectServiceTests
     }
 
     [StorjIntegrationFact]
+    public async Task UploadObject_Completes_WhenAccessIsDisposedMidTransfer()
+    {
+        using var context = IntegrationTestEnvironment.CreateContext();
+        var bucketService = new BucketService(context.Access);
+        var objectService = new ObjectService(context.Access);
+        var objectKey = StorjTestHelper.CreateObjectKey("upload-dispose-mid-transfer");
+        var payload = IntegrationTestEnvironment.CreatePayload(6 * 1_024 * 1_024);
+
+        try
+        {
+            await bucketService.EnsureBucketAsync(context.BucketName);
+
+            var upload = await objectService.UploadObjectAsync(context.BucketName, objectKey, payload, startImmediately: false);
+            var uploadTask = upload.StartUploadAsync();
+            await StorjTestHelper.RequireStarted(uploadTask, "upload after access dispose");
+
+            await StorjTestHelper.WaitUntilAsync(
+                () => upload.BytesSent > 0 || upload.Completed,
+                TimeSpan.FromSeconds(30),
+                "Timed out waiting for the upload to begin before disposing the access.");
+
+            context.Access.Dispose();
+            await uploadTask;
+
+            Assert.True(upload.Completed, upload.ErrorMessage);
+            Assert.False(upload.Failed);
+            Assert.False(upload.Cancelled);
+        }
+        finally
+        {
+            using var cleanupContext = IntegrationTestEnvironment.CreateContext();
+            var cleanupObjectService = new ObjectService(cleanupContext.Access);
+            await StorjTestHelper.DeleteObjectIfPresentAsync(cleanupObjectService, cleanupContext.BucketName, objectKey);
+        }
+    }
+
+    [StorjIntegrationFact]
+    public async Task DownloadObject_Completes_WhenAccessIsDisposedMidTransfer()
+    {
+        using var context = IntegrationTestEnvironment.CreateContext();
+        var bucketService = new BucketService(context.Access);
+        var objectService = new ObjectService(context.Access);
+        var objectKey = StorjTestHelper.CreateObjectKey("download-dispose-mid-transfer");
+        var payload = IntegrationTestEnvironment.CreatePayload(6 * 1_024 * 1_024);
+
+        try
+        {
+            await bucketService.EnsureBucketAsync(context.BucketName);
+            await StorjTestHelper.UploadBytesAsync(objectService, context.BucketName, objectKey, payload);
+
+            var download = await objectService.DownloadObjectAsync(context.BucketName, objectKey, startImmediately: false);
+            var downloadTask = download.StartDownloadAsync();
+            await StorjTestHelper.RequireStarted(downloadTask, "download after access dispose");
+
+            await StorjTestHelper.WaitUntilAsync(
+                () => download.BytesReceived > 0 || download.Completed,
+                TimeSpan.FromSeconds(30),
+                "Timed out waiting for the download to begin before disposing the access.");
+
+            context.Access.Dispose();
+            await downloadTask;
+
+            Assert.True(download.Completed, download.ErrorMessage);
+            Assert.False(download.Failed);
+            Assert.False(download.Cancelled);
+            Assert.Equal(payload, download.DownloadedBytes);
+        }
+        finally
+        {
+            using var cleanupContext = IntegrationTestEnvironment.CreateContext();
+            var cleanupObjectService = new ObjectService(cleanupContext.Access);
+            await StorjTestHelper.DeleteObjectIfPresentAsync(cleanupObjectService, cleanupContext.BucketName, objectKey);
+        }
+    }
+
+    [StorjIntegrationFact]
     public async Task DownloadStream_Provides_First50Bytes()
     {
         using var context = IntegrationTestEnvironment.CreateContext();
@@ -256,6 +332,42 @@ public class ObjectServiceTests
         finally
         {
             await StorjTestHelper.DeleteObjectIfPresentAsync(objectService, context.BucketName, objectKey);
+        }
+    }
+
+    [StorjIntegrationFact]
+    public async Task DownloadStream_RemainsReadable_WhenAccessIsDisposed()
+    {
+        using var context = IntegrationTestEnvironment.CreateContext();
+        var bucketService = new BucketService(context.Access);
+        var objectService = new ObjectService(context.Access);
+        var objectKey = StorjTestHelper.CreateObjectKey("download-stream-after-access-dispose");
+        var payload = IntegrationTestEnvironment.CreatePayload(512 * 1_024);
+
+        try
+        {
+            await bucketService.EnsureBucketAsync(context.BucketName);
+            await StorjTestHelper.UploadBytesAsync(objectService, context.BucketName, objectKey, payload);
+
+            using var stream = await objectService.GetObjectAsStream(context.BucketName, objectKey);
+            var buffer = new byte[payload.Length];
+            var bytesRead = await stream.ReadAsync(buffer, 0, 256);
+
+            Assert.Equal(256, bytesRead);
+
+            context.Access.Dispose();
+
+            using var remaining = new MemoryStream();
+            remaining.Write(buffer, 0, bytesRead);
+            await stream.CopyToAsync(remaining);
+
+            Assert.Equal(payload, remaining.ToArray());
+        }
+        finally
+        {
+            using var cleanupContext = IntegrationTestEnvironment.CreateContext();
+            var cleanupObjectService = new ObjectService(cleanupContext.Access);
+            await StorjTestHelper.DeleteObjectIfPresentAsync(cleanupObjectService, cleanupContext.BucketName, objectKey);
         }
     }
 

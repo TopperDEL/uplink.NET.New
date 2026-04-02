@@ -14,13 +14,14 @@ public class UploadOperation : IDisposable
 {
     private const int ChunkSize = 80 * 1024; // 80 KB
 
-    private readonly nint _projectHandle;
+    private readonly Access _access;
     private readonly string _bucketName;
     private readonly byte[] _data;
     private readonly UplinkOptions _nativeOptions;
     private readonly CustomMetadata? _customMetadata;
 
     private bool _cancelRequested;
+    private Access.ProjectHandleLease? _projectLease;
 
     public string ObjectName { get; }
     public long BytesSent { get; private set; }
@@ -40,14 +41,14 @@ public class UploadOperation : IDisposable
     internal record UplinkOptions(long Expires);
 
     internal UploadOperation(
-        nint projectHandle,
+        Access access,
         string bucketName,
         string objectName,
         byte[] data,
         UplinkOptions nativeOptions,
         CustomMetadata? customMetadata)
     {
-        _projectHandle  = projectHandle;
+        _access         = access;
         _bucketName     = bucketName;
         ObjectName      = objectName;
         _data           = data;
@@ -56,7 +57,25 @@ public class UploadOperation : IDisposable
         _customMetadata = customMetadata;
     }
 
-    public Task? StartUploadAsync() => Task.Run(PerformUploadAsync);
+    public Task? StartUploadAsync()
+    {
+        if (_projectLease != null)
+            throw new InvalidOperationException("The upload operation has already been started.");
+
+        var projectLease = _access.AcquireProjectLease();
+
+        try
+        {
+            _projectLease = projectLease;
+            return Task.Run(PerformUploadAsync);
+        }
+        catch
+        {
+            projectLease.Dispose();
+            _projectLease = null;
+            throw;
+        }
+    }
 
     private async Task PerformUploadAsync()
     {
@@ -122,6 +141,8 @@ public class UploadOperation : IDisposable
         finally
         {
             UplinkInterop.FreeUploadHandle(uploadHandle);
+            _projectLease?.Dispose();
+            _projectLease = null;
         }
     }
 
@@ -129,7 +150,7 @@ public class UploadOperation : IDisposable
     {
         var opts = new UplinkInterop.UplinkUploadOptions { expires = _nativeOptions.Expires };
         var result = UplinkInterop.uplink_upload_object(
-            _projectHandle, _bucketName, ObjectName, &opts);
+            _projectLease!.Handle, _bucketName, ObjectName, &opts);
         if (result.error != nint.Zero)
         {
             var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
