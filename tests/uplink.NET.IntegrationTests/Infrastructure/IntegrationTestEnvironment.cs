@@ -104,7 +104,7 @@ internal static class IntegrationTestEnvironment
         var config = new Config
         {
             TempDirectory = tempDirectory,
-            SerializeNativeOperations = IsNativeSerializationEnabled()
+            SerializeNativeOperations = IsNativeSerializationEnabled() || IsDiagnosticsEnabled()
         };
 
         if (!IsDiagnosticsEnabled())
