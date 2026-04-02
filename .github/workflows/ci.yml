@@ -1,4 +1,4 @@
-name: Integration Tests
+name: Multi-Platform Integration Tests
 
 env:
   UPLINK_C_REF: v1.10.1
