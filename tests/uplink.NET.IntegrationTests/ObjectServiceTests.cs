@@ -52,8 +52,7 @@ public class ObjectServiceTests
             upload.UploadOperationProgressChanged += _ => Interlocked.Increment(ref progressEventCount);
 
             var uploadTask = upload.StartUploadAsync();
-            Assert.NotNull(uploadTask);
-            await uploadTask!;
+            await StorjTestHelper.RequireStarted(uploadTask, "upload");
 
             Assert.True(upload.Completed, upload.ErrorMessage);
             Assert.False(upload.Failed);
@@ -112,7 +111,9 @@ public class ObjectServiceTests
             var firstUpload = await objectService.UploadObjectAsync(context.BucketName, firstKey, firstPayload, startImmediately: false);
             var secondUpload = await objectService.UploadObjectAsync(context.BucketName, secondKey, secondPayload, startImmediately: false);
 
-            await Task.WhenAll(firstUpload.StartUploadAsync()!, secondUpload.StartUploadAsync()!);
+            await Task.WhenAll(
+                StorjTestHelper.RequireStarted(firstUpload.StartUploadAsync(), "first parallel upload"),
+                StorjTestHelper.RequireStarted(secondUpload.StartUploadAsync(), "second parallel upload"));
 
             Assert.True(firstUpload.Completed);
             Assert.True(secondUpload.Completed);
@@ -144,8 +145,7 @@ public class ObjectServiceTests
             download.DownloadOperationProgressChanged += _ => Interlocked.Increment(ref progressEventCount);
 
             var downloadTask = download.StartDownloadAsync();
-            Assert.NotNull(downloadTask);
-            await downloadTask!;
+            await StorjTestHelper.RequireStarted(downloadTask, "download");
 
             Assert.True(download.Completed, download.ErrorMessage);
             Assert.False(download.Failed);
@@ -180,7 +180,9 @@ public class ObjectServiceTests
             var firstDownload = await objectService.DownloadObjectAsync(context.BucketName, firstKey, startImmediately: false);
             var secondDownload = await objectService.DownloadObjectAsync(context.BucketName, secondKey, startImmediately: false);
 
-            await Task.WhenAll(firstDownload.StartDownloadAsync()!, secondDownload.StartDownloadAsync()!);
+            await Task.WhenAll(
+                StorjTestHelper.RequireStarted(firstDownload.StartDownloadAsync(), "first parallel download"),
+                StorjTestHelper.RequireStarted(secondDownload.StartDownloadAsync(), "second parallel download"));
 
             Assert.Equal(firstPayload, firstDownload.DownloadedBytes);
             Assert.Equal(secondPayload, secondDownload.DownloadedBytes);
@@ -210,6 +212,7 @@ public class ObjectServiceTests
 
             var upload = await objectService.UploadObjectAsync(context.BucketName, uploadKey, uploadPayload, startImmediately: false);
             var uploadTask = upload.StartUploadAsync();
+            var requiredUploadTask = StorjTestHelper.RequireStarted(uploadTask, "overlapping upload");
 
             await StorjTestHelper.WaitUntilAsync(
                 () => upload.BytesSent > 0 || upload.Completed,
@@ -217,7 +220,7 @@ public class ObjectServiceTests
                 "Timed out waiting for the overlapping upload to begin.");
 
             var downloaded = await StorjTestHelper.DownloadBytesAsync(objectService, context.BucketName, downloadKey);
-            await uploadTask!;
+            await requiredUploadTask;
 
             Assert.Equal(downloadPayload, downloaded);
             Assert.True(upload.Completed, upload.ErrorMessage);

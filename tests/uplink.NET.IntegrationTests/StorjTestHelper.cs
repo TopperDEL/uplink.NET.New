@@ -50,8 +50,7 @@ internal static class StorjTestHelper
             : await objectService.UploadObjectAsync(bucketName, objectKey, payload, new UploadOptions(), metadata, startImmediately: false);
 
         var uploadTask = upload.StartUploadAsync();
-        Assert.NotNull(uploadTask);
-        await uploadTask!;
+        await RequireStarted(uploadTask, "upload");
 
         Assert.True(upload.Completed, upload.ErrorMessage);
         Assert.False(upload.Failed);
@@ -75,8 +74,7 @@ internal static class StorjTestHelper
             startImmediately: false);
 
         var uploadTask = upload.StartUploadAsync();
-        Assert.NotNull(uploadTask);
-        await uploadTask!;
+        await RequireStarted(uploadTask, "upload");
 
         Assert.True(upload.Completed, upload.ErrorMessage);
         Assert.False(upload.Failed);
@@ -96,8 +94,7 @@ internal static class StorjTestHelper
             startImmediately: false);
 
         var downloadTask = download.StartDownloadAsync();
-        Assert.NotNull(downloadTask);
-        await downloadTask!;
+        await RequireStarted(downloadTask, "download");
 
         Assert.True(download.Completed, download.ErrorMessage);
         Assert.False(download.Failed);
@@ -156,4 +153,7 @@ internal static class StorjTestHelper
 
         throw new TimeoutException(failureMessage);
     }
+
+    public static Task RequireStarted(Task? task, string operationName)
+        => task ?? throw new InvalidOperationException($"The {operationName} operation did not return a task.");
 }
