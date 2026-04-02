@@ -202,9 +202,9 @@ public class ObjectService : IObjectService
                 }
                 finally
                 {
-                    Marshal.FreeCoTaskMem(prefix);
-                    Marshal.FreeCoTaskMem(cursor);
-                    Marshal.FreeCoTaskMem(bucketPtr);
+                    UplinkInterop.FreeCoTaskMem(prefix);
+                    UplinkInterop.FreeCoTaskMem(cursor);
+                    UplinkInterop.FreeCoTaskMem(bucketPtr);
                 }
             }
             finally
@@ -472,8 +472,8 @@ public class ObjectService : IObjectService
 
         foreach (var e in entries)
         {
-            Marshal.FreeCoTaskMem(e.key);
-            Marshal.FreeCoTaskMem(e.value);
+            UplinkInterop.FreeCoTaskMem(e.key);
+            UplinkInterop.FreeCoTaskMem(e.value);
         }
     }
 
