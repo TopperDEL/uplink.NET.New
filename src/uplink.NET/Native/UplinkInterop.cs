@@ -528,9 +528,9 @@ internal static unsafe partial class UplinkInterop
     {
         if (project != nint.Zero)
         {
-            var errPtr = uplink_close_project(project);
-            if (errPtr != nint.Zero)
-                ConsumeError(errPtr);
+            var closeErrorPtr = uplink_close_project(project);
+            if (closeErrorPtr != nint.Zero)
+                ConsumeError(closeErrorPtr);
 
             uplink_free_project_result(new UplinkProjectResult { project = project, error = nint.Zero });
         }
@@ -552,9 +552,9 @@ internal static unsafe partial class UplinkInterop
     {
         if (download != nint.Zero)
         {
-            var errPtr = uplink_close_download(download);
-            if (errPtr != nint.Zero)
-                ConsumeError(errPtr);
+            var closeErrorPtr = uplink_close_download(download);
+            if (closeErrorPtr != nint.Zero)
+                ConsumeError(closeErrorPtr);
 
             uplink_free_download_result(new UplinkDownloadResult { download = download, error = nint.Zero });
         }
