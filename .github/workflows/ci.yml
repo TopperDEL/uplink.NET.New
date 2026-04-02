@@ -2,8 +2,8 @@ name: Linux Integration Tests
 
 on:
   push:
-    tags-ignore:
-      - '**'
+    branches:
+      - main
   pull_request:
 
 permissions:
@@ -54,8 +54,100 @@ jobs:
         run: echo "${{ steps.integration_test_config.outputs.message }}"
 
       - name: Run test suite
+        id: run_tests
         env:
           TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
-        run: dotnet test uplink.NET.sln -c Release --no-build
+        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests"
+
+      - name: Upload test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-results
+          path: TestResults/
+          if-no-files-found: warn
+
+      - name: Summarize test results
+        if: ${{ always() }}
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ steps.run_tests.outcome }}
+        run: |
+          python <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from datetime import datetime
+          from pathlib import Path
+
+          results_dir = Path("TestResults")
+          trx_files = sorted(results_dir.rglob("*.trx"))
+          outcome = os.environ.get("TEST_OUTCOME", "unknown")
+
+          def parse_dt(value: str):
+              if not value:
+                  return None
+              return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+          totals = {
+              "total": 0,
+              "executed": 0,
+              "passed": 0,
+              "failed": 0,
+              "skipped": 0,
+          }
+          duration_seconds = 0.0
+
+          for trx_file in trx_files:
+              root = ET.parse(trx_file).getroot()
+              namespace = {"trx": root.tag.split("}")[0].strip("{")} if root.tag.startswith("{") else {}
+              times = root.find(".//trx:Times", namespace) if namespace else root.find(".//Times")
+              unit_test_results = root.findall(".//trx:UnitTestResult", namespace) if namespace else root.findall(".//UnitTestResult")
+
+              for unit_test_result in unit_test_results:
+                  outcome_name = unit_test_result.attrib.get("outcome", "")
+                  totals["total"] += 1
+
+                  if outcome_name == "Passed":
+                      totals["executed"] += 1
+                      totals["passed"] += 1
+                  elif outcome_name in {"Failed", "Error", "Timeout", "Aborted"}:
+                      totals["executed"] += 1
+                      totals["failed"] += 1
+                  elif outcome_name in {"NotExecuted", "NotRunnable"}:
+                      totals["skipped"] += 1
+                  else:
+                      totals["executed"] += 1
+
+              if times is not None:
+                  start = parse_dt(times.attrib.get("start"))
+                  finish = parse_dt(times.attrib.get("finish"))
+                  if start and finish:
+                      duration_seconds += max((finish - start).total_seconds(), 0.0)
+
+          minutes, seconds = divmod(int(duration_seconds), 60)
+          hours, minutes = divmod(minutes, 60)
+          duration = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+          lines = [
+              "## Test results",
+              "",
+              "| Metric | Value |",
+              "| --- | --- |",
+              f"| Outcome | {outcome} |",
+              f"| Test result files | {len(trx_files)} |",
+              f"| Total | {totals['total']} |",
+              f"| Executed | {totals['executed']} |",
+              f"| Passed | {totals['passed']} |",
+              f"| Failed | {totals['failed']} |",
+              f"| Skipped | {totals['skipped']} |",
+              f"| Duration | {duration} |",
+          ]
+
+          if not trx_files:
+              lines.extend(["", "_No TRX test result files were generated._"])
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines) + "\n")
+          PY
