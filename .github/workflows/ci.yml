@@ -8,6 +8,7 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -131,7 +132,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ci-test-results-linux
-          path: TestResults/
+          path: |
+            TestResults/
+            ${{ env.CI_DIAGNOSTICS_DIR }}/
           if-no-files-found: warn
 
       - name: Upload diagnostics logs
@@ -221,7 +224,7 @@ jobs:
               f"| Duration | {duration} |",
               f"| Diagnostics directory | `{diagnostics_dir}` |",
               f"| Diagnostics log files | {len(diagnostics_logs)} |",
-              "| Diagnostics artifact | `ci-diagnostics-logs-linux` |",
+              "| Diagnostics artifacts | `ci-test-results-linux`, `ci-diagnostics-logs-linux` |",
           ]
 
           if not trx_files:
@@ -309,7 +312,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ci-test-results-windows
-          path: TestResults/
+          path: |
+            TestResults/
+            ${{ env.CI_DIAGNOSTICS_DIR }}/
           if-no-files-found: warn
 
       - name: Upload diagnostics logs
@@ -399,7 +404,7 @@ jobs:
               f"| Duration | {duration} |",
               f"| Diagnostics directory | `{diagnostics_dir}` |",
               f"| Diagnostics log files | {len(diagnostics_logs)} |",
-              "| Diagnostics artifact | `ci-diagnostics-logs-windows` |",
+              "| Diagnostics artifacts | `ci-test-results-windows`, `ci-diagnostics-logs-windows` |",
           ]
 
           if not trx_files:
