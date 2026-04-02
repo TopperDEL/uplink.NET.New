@@ -16,6 +16,7 @@ public class DownloadOperation : IDisposable
     private readonly Access _access;
     private readonly string _bucketName;
     private readonly DownloadOptions _options;
+    private readonly object _startSync = new();
 
     private bool _cancelRequested;
     private Access.ProjectHandleLease? _projectLease;
@@ -50,21 +51,24 @@ public class DownloadOperation : IDisposable
 
     public Task? StartDownloadAsync()
     {
-        if (_projectLease != null)
-            throw new InvalidOperationException("The download operation has already been started.");
-
-        var projectLease = _access.AcquireProjectLease();
-
-        try
+        lock (_startSync)
         {
-            _projectLease = projectLease;
-            return Task.Run(PerformDownloadAsync);
-        }
-        catch
-        {
-            projectLease.Dispose();
-            _projectLease = null;
-            throw;
+            if (_projectLease != null)
+                throw new InvalidOperationException("The download operation has already been started.");
+
+            var projectLease = _access.AcquireProjectLease();
+
+            try
+            {
+                _projectLease = projectLease;
+                return Task.Run(PerformDownloadAsync);
+            }
+            catch
+            {
+                projectLease.Dispose();
+                _projectLease = null;
+                throw;
+            }
         }
     }
 
@@ -131,8 +135,11 @@ public class DownloadOperation : IDisposable
         finally
         {
             UplinkInterop.FreeDownloadHandle(downloadHandle);
-            _projectLease?.Dispose();
-            _projectLease = null;
+            lock (_startSync)
+            {
+                _projectLease?.Dispose();
+                _projectLease = null;
+            }
         }
     }
 

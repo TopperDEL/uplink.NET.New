@@ -19,6 +19,7 @@ public class UploadOperation : IDisposable
     private readonly byte[] _data;
     private readonly UplinkOptions _nativeOptions;
     private readonly CustomMetadata? _customMetadata;
+    private readonly object _startSync = new();
 
     private bool _cancelRequested;
     private Access.ProjectHandleLease? _projectLease;
@@ -59,21 +60,24 @@ public class UploadOperation : IDisposable
 
     public Task? StartUploadAsync()
     {
-        if (_projectLease != null)
-            throw new InvalidOperationException("The upload operation has already been started.");
-
-        var projectLease = _access.AcquireProjectLease();
-
-        try
+        lock (_startSync)
         {
-            _projectLease = projectLease;
-            return Task.Run(PerformUploadAsync);
-        }
-        catch
-        {
-            projectLease.Dispose();
-            _projectLease = null;
-            throw;
+            if (_projectLease != null)
+                throw new InvalidOperationException("The upload operation has already been started.");
+
+            var projectLease = _access.AcquireProjectLease();
+
+            try
+            {
+                _projectLease = projectLease;
+                return Task.Run(PerformUploadAsync);
+            }
+            catch
+            {
+                projectLease.Dispose();
+                _projectLease = null;
+                throw;
+            }
         }
     }
 
@@ -141,8 +145,11 @@ public class UploadOperation : IDisposable
         finally
         {
             UplinkInterop.FreeUploadHandle(uploadHandle);
-            _projectLease?.Dispose();
-            _projectLease = null;
+            lock (_startSync)
+            {
+                _projectLease?.Dispose();
+                _projectLease = null;
+            }
         }
     }
 
