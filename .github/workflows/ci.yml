@@ -212,6 +212,8 @@ jobs:
     runs-on: windows-latest
     needs:
       - build-native-windows
+    env:
+      WINDOWS_NATIVE_RUNTIME_DIR: src/uplink.NET/runtimes/win-x64/native
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -222,11 +224,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: native-win-x64
-          path: src/uplink.NET/runtimes/win-x64/native
+          path: ${{ env.WINDOWS_NATIVE_RUNTIME_DIR }}
 
       - name: Add Windows native runtime to PATH
         shell: pwsh
-        run: Add-Content -Path $env:GITHUB_PATH -Value "$env:GITHUB_WORKSPACE\\src\\uplink.NET\\runtimes\\win-x64\\native"
+        run: Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:GITHUB_WORKSPACE $env:WINDOWS_NATIVE_RUNTIME_DIR)
 
       - name: Restore
         run: dotnet restore uplink.NET.sln
