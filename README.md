@@ -32,10 +32,19 @@ using var access = new Access("your-access-grant-here");
 
 // TempDirectory is optional. By default the library uses the platform temp directory.
 // var access = new Access("your-access-grant-here", new Config { TempDirectory = "/custom/temp" });
+//
+// Native-call diagnostics are opt-in. When enabled, the library writes native-call
+// breadcrumbs to a log file so production crashes leave a trail behind.
+// var access = new Access("your-access-grant-here", new Config
+// {
+//     EnableDiagnostics = true,
+//     DiagnosticsLogFilePath = "/var/log/uplink-net/native-calls.log"
+// });
 
 var buckets = new BucketService(access);
 var objects = new ObjectService(access);
 var storjVersion = Uplink.GetStorjVersion();
+var runtimeInfo = Uplink.GetRuntimeInfo();
 
 // Create or ensure a bucket exists
 var bucket = await buckets.EnsureBucketAsync("my-bucket");
@@ -171,6 +180,33 @@ Recommended release flow:
 
 > [!NOTE]
 > Local `dotnet pack` is useful for validation, but the tag/release workflow is the path that bundles the native runtime artifacts before publishing and attaching release assets.
+
+## Production crash diagnostics
+
+If the underlying `storj_uplink` native library raises a real `SIGSEGV`, the OS terminates the process immediately. This wrapper can add context and breadcrumbs, but it cannot turn a native segmentation fault into a normal managed exception.
+
+Enable diagnostics in production to leave a durable breadcrumb trail:
+
+```csharp
+var config = new Config
+{
+    EnableDiagnostics = true,
+    DiagnosticsLogFilePath = "/var/log/uplink-net/native-calls.log"
+};
+
+using var access = new Access(accessGrant, config);
+Console.WriteLine(Uplink.GetRuntimeInfo());
+Console.WriteLine(access.DiagnosticsLogFilePath);
+```
+
+The diagnostics log records:
+
+- the native call that started
+- whether it completed, returned a native error, or returned a suspicious null handle/iterator
+- bucket/key context for the call
+- runtime metadata from `Uplink.GetRuntimeInfo()`
+
+For post-mortem analysis, inspect the last `stage=start` entry that does not have a matching completion line.
 
 ## License
 

@@ -115,14 +115,24 @@ public class BucketService : IBucketService
 
     private Bucket CreateBucket(nint projectHandle, string bucketName)
     {
+        using var trace = _access.Trace("uplink_create_bucket", ("bucket", bucketName));
         var result = UplinkInterop.uplink_create_bucket(projectHandle, bucketName);
         try
         {
             if (result.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                trace?.NativeError(msg, code);
                 throw new BucketCreationException(bucketName, msg);
             }
+
+            if (result.bucket == nint.Zero)
+            {
+                trace?.Fail("Native library returned a null bucket result without an error.");
+                throw new BucketCreationException(bucketName, "Native library returned a null bucket result without an error.");
+            }
+
+            trace?.Success();
             return UplinkInterop.MarshalBucket(result.bucket);
         }
         finally
@@ -133,14 +143,24 @@ public class BucketService : IBucketService
 
     private Bucket EnsureBucket(nint projectHandle, string bucketName)
     {
+        using var trace = _access.Trace("uplink_ensure_bucket", ("bucket", bucketName));
         var result = UplinkInterop.uplink_ensure_bucket(projectHandle, bucketName);
         try
         {
             if (result.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                trace?.NativeError(msg, code);
                 throw new BucketCreationException(bucketName, msg);
             }
+
+            if (result.bucket == nint.Zero)
+            {
+                trace?.Fail("Native library returned a null bucket result without an error.");
+                throw new BucketCreationException(bucketName, "Native library returned a null bucket result without an error.");
+            }
+
+            trace?.Success();
             return UplinkInterop.MarshalBucket(result.bucket);
         }
         finally
@@ -151,14 +171,24 @@ public class BucketService : IBucketService
 
     private Bucket StatBucket(nint projectHandle, string bucketName)
     {
+        using var trace = _access.Trace("uplink_stat_bucket", ("bucket", bucketName));
         var result = UplinkInterop.uplink_stat_bucket(projectHandle, bucketName);
         try
         {
             if (result.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                trace?.NativeError(msg, code);
                 throw new BucketNotFoundException(bucketName, msg);
             }
+
+            if (result.bucket == nint.Zero)
+            {
+                trace?.Fail("Native library returned a null bucket result without an error.");
+                throw new BucketNotFoundException(bucketName, "Native library returned a null bucket result without an error.");
+            }
+
+            trace?.Success();
             return UplinkInterop.MarshalBucket(result.bucket);
         }
         finally
@@ -169,6 +199,7 @@ public class BucketService : IBucketService
 
     private unsafe BucketList ListBuckets(nint projectHandle, ListBucketsOptions opts)
     {
+        using var trace = _access.Trace("uplink_list_buckets", ("cursor", opts.Cursor ?? string.Empty));
         var nativeOpts = new UplinkInterop.UplinkListBucketsOptions
         {
             cursor = opts.Cursor != null
@@ -184,6 +215,12 @@ public class BucketService : IBucketService
         var list = new BucketList();
         try
         {
+            if (iterator == nint.Zero)
+            {
+                trace?.Fail("Native library returned a null bucket iterator without an error.");
+                throw new BucketListException("Native library returned a null bucket iterator without an error.");
+            }
+
             while (UplinkInterop.uplink_bucket_iterator_next(iterator))
             {
                 nint bucketPtr = UplinkInterop.uplink_bucket_iterator_item(iterator);
@@ -193,9 +230,12 @@ public class BucketService : IBucketService
             nint errPtr = UplinkInterop.uplink_bucket_iterator_err(iterator);
             if (errPtr != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+                trace?.NativeError(msg, code);
                 throw new BucketListException(msg);
             }
+
+            trace?.Success();
         }
         finally
         {
@@ -207,14 +247,18 @@ public class BucketService : IBucketService
 
     private void DeleteBucket(nint projectHandle, string bucketName)
     {
+        using var trace = _access.Trace("uplink_delete_bucket", ("bucket", bucketName));
         var result = UplinkInterop.uplink_delete_bucket(projectHandle, bucketName);
         try
         {
             if (result.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                trace?.NativeError(msg, code);
                 throw new BucketDeletionException(bucketName, msg);
             }
+
+            trace?.Success();
         }
         finally
         {
@@ -224,14 +268,18 @@ public class BucketService : IBucketService
 
     private void DeleteBucketWithObjects(nint projectHandle, string bucketName)
     {
+        using var trace = _access.Trace("uplink_delete_bucket_with_objects", ("bucket", bucketName));
         var result = UplinkInterop.uplink_delete_bucket_with_objects(projectHandle, bucketName);
         try
         {
             if (result.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                trace?.NativeError(msg, code);
                 throw new BucketDeletionException(bucketName, msg);
             }
+
+            trace?.Success();
         }
         finally
         {

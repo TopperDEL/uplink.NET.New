@@ -8,6 +8,7 @@ namespace uplink.NET.Models;
 /// </summary>
 public class ChunkedUploadOperation : IDisposable
 {
+    private readonly Access _access;
     private nint _uploadHandle;
     private Access.ProjectHandleLease? _projectLease;
     private bool _committed;
@@ -17,9 +18,10 @@ public class ChunkedUploadOperation : IDisposable
     public bool Failed { get; private set; }
     public string? ErrorMessage { get; private set; }
 
-    internal ChunkedUploadOperation(nint uploadHandle, string objectName, Access.ProjectHandleLease projectLease)
+    internal ChunkedUploadOperation(nint uploadHandle, string objectName, Access.ProjectHandleLease projectLease, Access access)
     {
         ArgumentNullException.ThrowIfNull(projectLease);
+        _access = access ?? throw new ArgumentNullException(nameof(access));
         _uploadHandle = uploadHandle;
         ObjectName    = objectName;
         _projectLease = projectLease;
@@ -35,6 +37,7 @@ public class ChunkedUploadOperation : IDisposable
 
         unsafe
         {
+            using var trace = _access.Trace("uplink_upload_write", ("key", ObjectName), ("count", chunk.Length));
             var writeResult = UplinkInterop.WithPinnedBuffer(
                 chunk, 0, chunk.Length,
                 (ptr, len) => UplinkInterop.uplink_upload_write(_uploadHandle, (void*)ptr, len));
@@ -42,11 +45,14 @@ public class ChunkedUploadOperation : IDisposable
             {
                 if (writeResult.error != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                    var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                    trace?.NativeError(msg, code);
                     Failed       = true;
                     ErrorMessage = msg;
                     return false;
                 }
+
+                trace?.Success();
             }
             finally
             {
@@ -65,16 +71,19 @@ public class ChunkedUploadOperation : IDisposable
             throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
         await Task.Yield();
 
+        using var trace = _access.Trace("uplink_upload_commit", ("key", ObjectName));
         var errPtr = UplinkInterop.uplink_upload_commit(_uploadHandle);
         if (errPtr != nint.Zero)
         {
-            var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+            var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+            trace?.NativeError(msg, code);
             Failed       = true;
             ErrorMessage = msg;
             return false;
         }
 
         _committed = true;
+        trace?.Success();
         ReleaseHandle();
         return true;
     }
@@ -85,15 +94,18 @@ public class ChunkedUploadOperation : IDisposable
         if (_disposed)
             throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
         await Task.Yield();
+        using var trace = _access.Trace("uplink_upload_abort", ("key", ObjectName));
         var errPtr = UplinkInterop.uplink_upload_abort(_uploadHandle);
         if (errPtr != nint.Zero)
         {
-            var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+            var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+            trace?.NativeError(msg, code);
             Failed       = true;
             ErrorMessage = msg;
             return false;
         }
 
+        trace?.Success();
         ReleaseHandle();
         return true;
     }
@@ -107,12 +119,18 @@ public class ChunkedUploadOperation : IDisposable
         {
             if (!_committed)
             {
+                using var trace = _access.Trace("uplink_upload_abort", ("key", ObjectName));
                 var errPtr = UplinkInterop.uplink_upload_abort(_uploadHandle);
                 if (errPtr != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                    var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+                    trace?.NativeError(msg, code);
                     Failed       = true;
                     ErrorMessage = msg;
+                }
+                else
+                {
+                    trace?.Success();
                 }
             }
 

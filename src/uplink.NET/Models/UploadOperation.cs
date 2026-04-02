@@ -124,7 +124,10 @@ public class UploadOperation : IDisposable
             }
 
             if (_customMetadata?.Entries.Count > 0)
-                SetCustomMetadataNative(uploadHandle, _customMetadata);
+            {
+                using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", _bucketName), ("key", ObjectName));
+                SetCustomMetadataNative(uploadHandle, _customMetadata, metadataTrace);
+            }
 
             string? commitError = CommitNativeUpload(uploadHandle);
             if (commitError != null)
@@ -155,21 +158,33 @@ public class UploadOperation : IDisposable
 
     private unsafe (nint handle, string? error) BeginNativeUpload()
     {
+        using var trace = _access.Trace("uplink_upload_object", ("bucket", _bucketName), ("key", ObjectName));
         var opts = new UplinkInterop.UplinkUploadOptions { expires = _nativeOptions.Expires };
         var result = UplinkInterop.uplink_upload_object(
             _projectLease!.Handle, _bucketName, ObjectName, &opts);
         if (result.error != nint.Zero)
         {
-            var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+            trace?.NativeError(msg, code);
             UplinkInterop.uplink_free_upload_result(result);
             return (nint.Zero, msg);
         }
+
+        if (result.upload == nint.Zero)
+        {
+            trace?.Fail("Native library returned a null upload handle without an error.");
+            UplinkInterop.uplink_free_upload_result(result);
+            return (nint.Zero, "Native library returned a null upload handle without an error.");
+        }
+
+        trace?.Success();
         return (result.upload, null);
     }
 
     private unsafe (uint written, string? error) WriteChunk(
         nint handle, int offset, int count)
     {
+        using var trace = _access.Trace("uplink_upload_write", ("bucket", _bucketName), ("key", ObjectName), ("offset", offset), ("count", count));
         var writeResult = UplinkInterop.WithPinnedBuffer(
             _data, offset, count,
             (ptr, len) => UplinkInterop.uplink_upload_write(handle, (void*)ptr, len));
@@ -177,10 +192,12 @@ public class UploadOperation : IDisposable
         {
             if (writeResult.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                trace?.NativeError(msg, code);
                 return (0, msg);
             }
 
+            trace?.Success();
             return ((uint)(nuint)writeResult.bytes_written, null);
         }
         finally
@@ -195,19 +212,23 @@ public class UploadOperation : IDisposable
         if (errPtr != nint.Zero) UplinkInterop.uplink_free_error(errPtr);
     }
 
-    private static string? CommitNativeUpload(nint handle)
+    private string? CommitNativeUpload(nint handle)
     {
+        using var trace = _access.Trace("uplink_upload_commit", ("bucket", _bucketName), ("key", ObjectName));
         var errPtr = UplinkInterop.uplink_upload_commit(handle);
         if (errPtr != nint.Zero)
         {
-            var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+            var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+            trace?.NativeError(msg, code);
             return msg;
         }
+
+        trace?.Success();
         return null;
     }
 
     private static unsafe void SetCustomMetadataNative(
-        nint uploadHandle, CustomMetadata metadata)
+        nint uploadHandle, CustomMetadata metadata, uplink.NET.Diagnostics.UplinkDiagnosticsSession.NativeCallTrace? trace)
     {
         var entries = metadata.Entries
             .Select(kv => new UplinkInterop.UplinkCustomMetadataEntry
@@ -228,7 +249,11 @@ public class UploadOperation : IDisposable
             };
             var errPtr = UplinkInterop.uplink_upload_set_custom_metadata(uploadHandle, nativeMeta);
             if (errPtr != nint.Zero)
-                UplinkInterop.uplink_free_error(errPtr);
+            {
+                var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+                trace?.NativeError(msg, code);
+                throw new IOException($"Failed to set custom metadata on Storj upload: {msg}");
+            }
         }
 
         foreach (var e in entries)
@@ -236,6 +261,8 @@ public class UploadOperation : IDisposable
             System.Runtime.InteropServices.Marshal.FreeCoTaskMem(e.key);
             System.Runtime.InteropServices.Marshal.FreeCoTaskMem(e.value);
         }
+
+        trace?.Success();
     }
 
     private void SetFailed(string message)

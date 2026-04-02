@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.InteropServices;
 
 namespace uplink.NET;
 
@@ -12,4 +13,7 @@ public static class Uplink
                .FirstOrDefault(attribute => attribute.Key == StorjUplinkVersionMetadataKey)
                ?.Value
            ?? string.Empty;
+
+    public static string GetRuntimeInfo()
+        => $".NET={RuntimeInformation.FrameworkDescription}; OS={RuntimeInformation.OSDescription}; ProcessArchitecture={RuntimeInformation.ProcessArchitecture}; OSArchitecture={RuntimeInformation.OSArchitecture}; PID={Environment.ProcessId}; storj_uplink={GetStorjVersion()}";
 }

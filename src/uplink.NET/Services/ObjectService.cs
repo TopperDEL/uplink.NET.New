@@ -96,6 +96,7 @@ public class ObjectService : IObjectService
         UploadOptions? uploadOptions, CustomMetadata? customMetadata)
     {
         var projectLease = _access.AcquireProjectLease();
+        using var trace = _access.Trace("uplink_upload_object", ("bucket", bucketName), ("key", key));
         var opts = new UplinkInterop.UplinkUploadOptions
         {
             expires = UplinkInterop.DateTimeToUnix(uploadOptions?.Expires)
@@ -107,7 +108,8 @@ public class ObjectService : IObjectService
 
         if (uploadResult.error != nint.Zero)
         {
-            var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref uploadResult.error);
+            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref uploadResult.error);
+            trace?.NativeError(msg, code);
             UplinkInterop.uplink_free_upload_result(uploadResult);
             projectLease.Dispose();
             throw new Exception($"Failed to begin upload: {msg}");
@@ -115,11 +117,20 @@ public class ObjectService : IObjectService
 
         var uploadHandle = uploadResult.upload;
 
+        if (uploadHandle == nint.Zero)
+        {
+            trace?.Fail("Native library returned a null upload handle without an error.");
+            UplinkInterop.uplink_free_upload_result(uploadResult);
+            projectLease.Dispose();
+            throw new Exception("Failed to begin upload: native library returned a null upload handle without an error.");
+        }
+
         // Set custom metadata if supplied
         if (customMetadata?.Entries.Count > 0)
-            SetCustomMetadataNative(uploadHandle, customMetadata);
+            SetCustomMetadataNative(uploadHandle, customMetadata, trace);
 
-        return Task.FromResult(new ChunkedUploadOperation(uploadHandle, key, projectLease));
+        trace?.Success();
+        return Task.FromResult(new ChunkedUploadOperation(uploadHandle, key, projectLease, _access));
     }
 
     // ── List ──────────────────────────────────────────────────────────────────
@@ -133,6 +144,7 @@ public class ObjectService : IObjectService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var trace = _access.Trace("uplink_list_objects", ("bucket", bucketName), ("prefix", opts.Prefix ?? string.Empty));
             try
             {
                 var prefix  = Marshal.StringToCoTaskMemUTF8(opts.Prefix ?? string.Empty);
@@ -155,6 +167,12 @@ public class ObjectService : IObjectService
                     var list = new ObjectList();
                     try
                     {
+                        if (iterator == nint.Zero)
+                        {
+                            trace?.Fail("Native library returned a null object iterator without an error.");
+                            throw new ObjectListException("Native library returned a null object iterator without an error.");
+                        }
+
                         while (UplinkInterop.uplink_object_iterator_next(iterator))
                         {
                             nint objPtr = UplinkInterop.uplink_object_iterator_item(iterator);
@@ -164,9 +182,12 @@ public class ObjectService : IObjectService
                         nint errPtr = UplinkInterop.uplink_object_iterator_err(iterator);
                         if (errPtr != nint.Zero)
                         {
-                            var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                            var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+                            trace?.NativeError(msg, code);
                             throw new ObjectListException(msg);
                         }
+
+                        trace?.Success();
                     }
                     finally
                     {
@@ -196,6 +217,7 @@ public class ObjectService : IObjectService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var trace = _access.Trace("uplink_stat_object", ("bucket", bucketName), ("key", key));
             try
             {
                 var result = UplinkInterop.uplink_stat_object(projectLease.Handle, bucketName, key);
@@ -203,9 +225,18 @@ public class ObjectService : IObjectService
                 {
                     if (result.error != nint.Zero)
                     {
-                        var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        trace?.NativeError(msg, code);
                         throw new ObjectNotFoundException(key, msg);
                     }
+
+                    if (result.object_ == nint.Zero)
+                    {
+                        trace?.Fail("Native library returned a null object result without an error.");
+                        throw new ObjectNotFoundException(key, "Native library returned a null object result without an error.");
+                    }
+
+                    trace?.Success();
                     return UplinkInterop.MarshalObject(result.object_);
                 }
                 finally
@@ -238,8 +269,8 @@ public class ObjectService : IObjectService
             try
             {
                 handle = OpenDownloadHandle(projectLease.Handle, bucketName, key, downloadOptions);
-                var length = GetDownloadLength(handle, downloadOptions);
-                var stream = new DownloadStream(handle, length, projectLease);
+                var length = GetDownloadLength(handle, downloadOptions, bucketName, key);
+                var stream = new DownloadStream(handle, length, projectLease, _access);
                 leaseTransferred = true;
                 handle = nint.Zero;
                 return stream;
@@ -283,6 +314,12 @@ public class ObjectService : IObjectService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var trace = _access.Trace(
+                "uplink_copy_object",
+                ("sourceBucket", sourceBucketName),
+                ("sourceKey", sourceKey),
+                ("destinationBucket", destinationBucketName),
+                ("destinationKey", destinationKey));
             try
             {
                 var result = UplinkInterop.uplink_copy_object(
@@ -297,10 +334,18 @@ public class ObjectService : IObjectService
                 {
                     if (result.error != nint.Zero)
                     {
-                        var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        trace?.NativeError(msg, code);
                         throw new IOException($"Failed to copy Storj object: {msg}");
                     }
 
+                    if (result.object_ == nint.Zero)
+                    {
+                        trace?.Fail("Native library returned a null copied object result without an error.");
+                        throw new IOException("Failed to copy Storj object: native library returned a null object result without an error.");
+                    }
+
+                    trace?.Success();
                     return UplinkInterop.MarshalObject(result.object_);
                 }
                 finally
@@ -324,6 +369,12 @@ public class ObjectService : IObjectService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var trace = _access.Trace(
+                "uplink_move_object",
+                ("sourceBucket", sourceBucketName),
+                ("sourceKey", sourceKey),
+                ("destinationBucket", destinationBucketName),
+                ("destinationKey", destinationKey));
             try
             {
                 var errPtr = UplinkInterop.uplink_move_object(
@@ -336,9 +387,12 @@ public class ObjectService : IObjectService
 
                 if (errPtr != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
+                    var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
+                    trace?.NativeError(msg, code);
                     throw new IOException($"Failed to move Storj object: {msg}");
                 }
+
+                trace?.Success();
             }
             finally
             {
@@ -354,6 +408,7 @@ public class ObjectService : IObjectService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var trace = _access.Trace("uplink_delete_object", ("bucket", bucketName), ("key", key));
             try
             {
                 var result = UplinkInterop.uplink_delete_object(projectLease.Handle, bucketName, key);
@@ -361,9 +416,12 @@ public class ObjectService : IObjectService
                 {
                     if (result.error != nint.Zero)
                     {
-                        var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        trace?.NativeError(msg, code);
                         throw new ObjectNotFoundException(key, msg);
                     }
+
+                    trace?.Success();
                 }
                 finally
                 {
@@ -380,7 +438,7 @@ public class ObjectService : IObjectService
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static unsafe void SetCustomMetadataNative(
-        nint uploadHandle, CustomMetadata metadata)
+        nint uploadHandle, CustomMetadata metadata, uplink.NET.Diagnostics.UplinkDiagnosticsSession.NativeCallTrace? trace = null)
     {
         var entries = metadata.Entries
             .Select(kv => new UplinkInterop.UplinkCustomMetadataEntry
@@ -401,7 +459,11 @@ public class ObjectService : IObjectService
             };
             var errPtr = UplinkInterop.uplink_upload_set_custom_metadata(uploadHandle, nativeMeta);
             if (errPtr != nint.Zero)
-                UplinkInterop.uplink_free_error(errPtr);
+            {
+                var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+                trace?.NativeError(msg, code);
+                throw new IOException($"Failed to set custom metadata on Storj upload: {msg}");
+            }
         }
 
         foreach (var e in entries)
@@ -411,12 +473,13 @@ public class ObjectService : IObjectService
         }
     }
 
-    private static unsafe nint OpenDownloadHandle(
+    private unsafe nint OpenDownloadHandle(
         nint projectHandle,
         string bucketName,
         string key,
         DownloadOptions downloadOptions)
     {
+        using var trace = _access.Trace("uplink_download_object", ("bucket", bucketName), ("key", key));
         var opts = new UplinkInterop.UplinkDownloadOptions
         {
             offset = downloadOptions.Offset,
@@ -431,31 +494,48 @@ public class ObjectService : IObjectService
 
         if (result.error != nint.Zero)
         {
-            var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+            trace?.NativeError(msg, code);
             UplinkInterop.uplink_free_download_result(result);
             throw new ObjectNotFoundException(key, msg);
         }
 
+        if (result.download == nint.Zero)
+        {
+            trace?.Fail("Native library returned a null download handle without an error.");
+            UplinkInterop.uplink_free_download_result(result);
+            throw new IOException("Failed to open Storj download stream: native library returned a null download handle without an error.");
+        }
+
+        trace?.Success();
         return result.download;
     }
 
-    private static long GetDownloadLength(
+    private long GetDownloadLength(
         nint downloadHandle,
-        DownloadOptions downloadOptions)
+        DownloadOptions downloadOptions,
+        string bucketName,
+        string key)
     {
+        using var trace = _access.Trace("uplink_download_info", ("bucket", bucketName), ("key", key));
         var infoResult = UplinkInterop.uplink_download_info(downloadHandle);
         try
         {
             if (infoResult.error != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref infoResult.error);
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref infoResult.error);
+                trace?.NativeError(msg, code);
                 throw new IOException($"Failed to inspect Storj download stream: {msg}");
             }
 
             if (infoResult.object_ == nint.Zero)
+            {
+                trace?.Success("Native library returned no object metadata; falling back to unknown length.");
                 return 0;
+            }
 
             var contentLength = UplinkInterop.MarshalObject(infoResult.object_).ContentLength;
+            trace?.Success();
             return CalculateDownloadLength(contentLength, downloadOptions);
         }
         finally

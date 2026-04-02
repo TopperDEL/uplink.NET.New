@@ -15,4 +15,14 @@ public class LibraryMetadataTests
         Assert.False(string.IsNullOrWhiteSpace(metadataValue));
         Assert.Equal(metadataValue, uplink.NET.Uplink.GetStorjVersion());
     }
+
+    [Fact]
+    public void GetRuntimeInfo_includes_framework_and_native_version()
+    {
+        var runtimeInfo = uplink.NET.Uplink.GetRuntimeInfo();
+
+        Assert.Contains(".NET=", runtimeInfo);
+        Assert.Contains("storj_uplink=", runtimeInfo);
+        Assert.Contains(uplink.NET.Uplink.GetStorjVersion(), runtimeInfo);
+    }
 }
