@@ -248,6 +248,7 @@ public class ObjectServiceTests
             var upload = await objectService.UploadObjectAsync(context.BucketName, objectKey, payload, startImmediately: false);
             var uploadTask = upload.StartUploadAsync();
             await StorjTestHelper.RequireStarted(uploadTask, "upload after access dispose");
+            Assert.NotNull(uploadTask);
 
             await StorjTestHelper.WaitUntilAsync(
                 () => upload.BytesSent > 0 || upload.Completed,
@@ -255,7 +256,7 @@ public class ObjectServiceTests
                 "Timed out waiting for the upload to begin before disposing the access.");
 
             context.Access.Dispose();
-            await uploadTask;
+            await uploadTask!;
 
             Assert.True(upload.Completed, upload.ErrorMessage);
             Assert.False(upload.Failed);
@@ -286,6 +287,7 @@ public class ObjectServiceTests
             var download = await objectService.DownloadObjectAsync(context.BucketName, objectKey, startImmediately: false);
             var downloadTask = download.StartDownloadAsync();
             await StorjTestHelper.RequireStarted(downloadTask, "download after access dispose");
+            Assert.NotNull(downloadTask);
 
             await StorjTestHelper.WaitUntilAsync(
                 () => download.BytesReceived > 0 || download.Completed,
@@ -293,7 +295,7 @@ public class ObjectServiceTests
                 "Timed out waiting for the download to begin before disposing the access.");
 
             context.Access.Dispose();
-            await downloadTask;
+            await downloadTask!;
 
             Assert.True(download.Completed, download.ErrorMessage);
             Assert.False(download.Failed);
