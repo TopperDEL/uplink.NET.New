@@ -145,6 +145,7 @@ public class DownloadOperation : IDisposable
 
     private unsafe (nint handle, string? error) BeginNativeDownload()
     {
+        using var trace = _access.Trace("uplink_download_object", ("bucket", _bucketName), ("key", ObjectName));
         var opts = new UplinkInterop.UplinkDownloadOptions
         {
             offset = _options.Offset,
@@ -154,26 +155,51 @@ public class DownloadOperation : IDisposable
             _projectLease!.Handle, _bucketName, ObjectName, &opts);
         if (result.error != nint.Zero)
         {
-            var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+            trace?.NativeError(msg, code);
             UplinkInterop.uplink_free_download_result(result);
             return (nint.Zero, msg);
         }
+
+        if (result.download == nint.Zero)
+        {
+            trace?.Fail("Native library returned a null download handle without an error.");
+            UplinkInterop.uplink_free_download_result(result);
+            return (nint.Zero, "Native library returned a null download handle without an error.");
+        }
+
+        trace?.Success();
         return (result.download, null);
     }
 
-    private static long GetTotalBytes(nint handle)
+    private long GetTotalBytes(nint handle)
     {
+        using var trace = _access.Trace("uplink_download_info", ("bucket", _bucketName), ("key", ObjectName));
         var infoResult = UplinkInterop.uplink_download_info(handle);
         long total = 0;
         if (infoResult.error == nint.Zero && infoResult.object_ != nint.Zero)
+        {
             total = UplinkInterop.MarshalObject(infoResult.object_).ContentLength;
+            trace?.Success();
+        }
+        else if (infoResult.error != nint.Zero)
+        {
+            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref infoResult.error);
+            trace?.NativeError(msg, code);
+        }
+        else
+        {
+            trace?.Success("Native library returned no object metadata; falling back to unknown length.");
+        }
+
         UplinkInterop.uplink_free_object_result(infoResult);
         return total;
     }
 
-    private static unsafe (uint bytesRead, bool eof, string? error) ReadChunk(
+    private unsafe (uint bytesRead, bool eof, string? error) ReadChunk(
         nint handle, byte[] buffer)
     {
+        using var trace = _access.Trace("uplink_download_read", ("bucket", _bucketName), ("key", ObjectName), ("bufferLength", buffer.Length));
         UplinkInterop.UplinkReadResult readResult;
         fixed (byte* bufPtr = buffer)
         {
@@ -189,9 +215,14 @@ public class DownloadOperation : IDisposable
                 var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref readResult.error);
                 bool isEof = code == UplinkInterop.EndOfFileErrorCode
                     || msg.Contains("EOF", StringComparison.OrdinalIgnoreCase);
+                if (isEof)
+                    trace?.Success("Reached EOF.");
+                else
+                    trace?.NativeError(msg, code);
                 return (bytesRead, isEof, isEof ? null : msg);
             }
 
+            trace?.Success();
             return (bytesRead, bytesRead == 0, null);
         }
         finally

@@ -6,6 +6,8 @@ internal static class IntegrationTestEnvironment
 {
     // Use a prime below 256 so the generated sequence cycles through a wide range of byte values.
     private const int PrimeModulusForPayloadPattern = 251;
+    private const string EnableDiagnosticsVariableName = "UPLINK_NET_ENABLE_DIAGNOSTICS";
+    private const string DiagnosticsDirectoryVariableName = "UPLINK_NET_DIAGNOSTICS_DIR";
 
     public const string AccessGrantVariableName = "TEST_ACCESS_GRANT";
     public const string BucketVariableName = "TEST_BUCKET";
@@ -33,8 +35,12 @@ internal static class IntegrationTestEnvironment
         var tempDirectory = Path.Combine(Path.GetTempPath(), "uplink.NET.IntegrationTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDirectory);
 
+        var accessConfig = CreateAccessConfig(tempDirectory);
+        if (accessConfig.EnableDiagnostics && !string.IsNullOrWhiteSpace(accessConfig.DiagnosticsLogFilePath))
+            Console.WriteLine($"[uplink.NET diagnostics] {accessConfig.DiagnosticsLogFilePath}");
+
         return new IntegrationTestContext(
-            new Access(accessGrant, new Config { TempDirectory = tempDirectory }),
+            new Access(accessGrant, accessConfig),
             bucketName,
             tempDirectory);
     }
@@ -62,6 +68,34 @@ internal static class IntegrationTestEnvironment
 
         return missingVariables.ToArray();
     }
+
+    private static Config CreateAccessConfig(string tempDirectory)
+    {
+        var config = new Config
+        {
+            TempDirectory = tempDirectory
+        };
+
+        if (!IsDiagnosticsEnabled())
+            return config;
+
+        var diagnosticsDirectory = Environment.GetEnvironmentVariable(DiagnosticsDirectoryVariableName);
+        if (string.IsNullOrWhiteSpace(diagnosticsDirectory))
+            return config;
+
+        Directory.CreateDirectory(diagnosticsDirectory);
+
+        config.EnableDiagnostics = true;
+        config.DiagnosticsLogFilePath = Path.Combine(
+            diagnosticsDirectory,
+            $"uplink-net-integration-{Guid.NewGuid():N}.log");
+
+        return config;
+    }
+
+    private static bool IsDiagnosticsEnabled()
+        => string.Equals(Environment.GetEnvironmentVariable(EnableDiagnosticsVariableName), "1", StringComparison.Ordinal)
+           || string.Equals(Environment.GetEnvironmentVariable(EnableDiagnosticsVariableName), "true", StringComparison.OrdinalIgnoreCase);
 }
 
 internal sealed class IntegrationTestContext : IDisposable

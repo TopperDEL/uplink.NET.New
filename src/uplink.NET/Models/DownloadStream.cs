@@ -9,6 +9,7 @@ namespace uplink.NET.Models;
 public class DownloadStream : Stream
 {
     private readonly object _syncRoot = new();
+    private readonly Access _access;
 
     private nint _downloadHandle;
     private Access.ProjectHandleLease? _projectLease;
@@ -17,11 +18,13 @@ public class DownloadStream : Stream
     private bool _disposed;
     private bool _endOfStream;
 
-    internal DownloadStream(nint downloadHandle, long length, Access.ProjectHandleLease projectLease)
+    internal DownloadStream(nint downloadHandle, long length, Access.ProjectHandleLease projectLease, Access access)
     {
         if (downloadHandle == nint.Zero)
             throw new ArgumentException("A valid native download handle is required.", nameof(downloadHandle));
         ArgumentNullException.ThrowIfNull(projectLease);
+        ArgumentNullException.ThrowIfNull(access);
+        _access = access;
 
         _downloadHandle = downloadHandle;
         _projectLease = projectLease;
@@ -161,10 +164,11 @@ public class DownloadStream : Stream
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
 
-    private static unsafe (int bytesRead, bool eof, string? error) ReadChunk(
+    private unsafe (int bytesRead, bool eof, string? error) ReadChunk(
         nint handle,
         Span<byte> buffer)
     {
+        using var trace = _access.Trace("uplink_download_read", ("bufferLength", buffer.Length));
         UplinkInterop.UplinkReadResult readResult;
         fixed (byte* bufPtr = buffer)
         {
@@ -182,9 +186,14 @@ public class DownloadStream : Stream
                 var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref readResult.error);
                 bool isEof = code == UplinkInterop.EndOfFileErrorCode
                     || msg.Contains("EOF", StringComparison.OrdinalIgnoreCase);
+                if (isEof)
+                    trace?.Success("Reached EOF.");
+                else
+                    trace?.NativeError(msg, code);
                 return (bytesRead, isEof, isEof ? null : msg);
             }
 
+            trace?.Success();
             return (bytesRead, bytesRead == 0, null);
         }
         finally

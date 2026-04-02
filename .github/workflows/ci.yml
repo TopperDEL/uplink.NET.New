@@ -74,6 +74,8 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-native-linux
+    env:
+      CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/TestResults/diagnostics
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -108,12 +110,20 @@ jobs:
       - name: Integration test configuration
         run: echo "${{ steps.integration_test_config.outputs.message }}"
 
+      - name: Prepare diagnostics logging
+        shell: bash
+        run: |
+          mkdir -p "$CI_DIAGNOSTICS_DIR"
+          echo "uplink.NET diagnostics logs will be written to: $CI_DIAGNOSTICS_DIR"
+
       - name: Run test suite
         id: run_tests
         env:
           TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
+          UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
+          UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
         run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests"
 
       - name: Upload test results
@@ -124,11 +134,20 @@ jobs:
           path: TestResults/
           if-no-files-found: warn
 
+      - name: Upload diagnostics logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-logs-linux
+          path: ${{ env.CI_DIAGNOSTICS_DIR }}/
+          if-no-files-found: warn
+
       - name: Summarize test results
         if: ${{ always() }}
         shell: bash
         env:
           TEST_OUTCOME: ${{ steps.run_tests.outcome }}
+          DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
         run: |
           python <<'PY'
           import os
@@ -139,6 +158,8 @@ jobs:
           results_dir = Path("TestResults")
           trx_files = sorted(results_dir.rglob("*.trx"))
           outcome = os.environ.get("TEST_OUTCOME", "unknown")
+          diagnostics_dir = Path(os.environ["DIAGNOSTICS_DIR"])
+          diagnostics_logs = sorted(diagnostics_dir.rglob("*.log")) if diagnostics_dir.exists() else []
 
           def parse_dt(value: str):
               if not value:
@@ -198,10 +219,19 @@ jobs:
               f"| Failed | {totals['failed']} |",
               f"| Skipped | {totals['skipped']} |",
               f"| Duration | {duration} |",
+              f"| Diagnostics directory | `{diagnostics_dir}` |",
+              f"| Diagnostics log files | {len(diagnostics_logs)} |",
+              "| Diagnostics artifact | `ci-diagnostics-logs-linux` |",
           ]
 
           if not trx_files:
               lines.extend(["", "_No TRX test result files were generated._"])
+
+          if diagnostics_logs:
+              lines.extend(["", "### Diagnostics logs", ""])
+              lines.extend(f"- `{log_path}`" for log_path in diagnostics_logs)
+          else:
+              lines.extend(["", "_No diagnostics log files were generated._"])
 
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write("\n".join(lines) + "\n")
@@ -213,6 +243,7 @@ jobs:
     needs:
       - build-native-windows
     env:
+      CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/TestResults/diagnostics
       WINDOWS_NATIVE_RUNTIME_DIR: src/uplink.NET/runtimes/win-x64/native
     steps:
       - uses: actions/checkout@v4
@@ -258,11 +289,19 @@ jobs:
         shell: pwsh
         run: Write-Output "${{ steps.integration_test_config.outputs.message }}"
 
+      - name: Prepare diagnostics logging
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:CI_DIAGNOSTICS_DIR | Out-Null
+          Write-Output "uplink.NET diagnostics logs will be written to: $env:CI_DIAGNOSTICS_DIR"
+
       - name: Run test suite
         id: run_tests
         env:
           TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+          UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
+          UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
         run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=windows-integration-tests"
 
       - name: Upload test results
@@ -273,11 +312,20 @@ jobs:
           path: TestResults/
           if-no-files-found: warn
 
+      - name: Upload diagnostics logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-logs-windows
+          path: ${{ env.CI_DIAGNOSTICS_DIR }}/
+          if-no-files-found: warn
+
       - name: Summarize test results
         if: ${{ always() }}
         shell: bash
         env:
           TEST_OUTCOME: ${{ steps.run_tests.outcome }}
+          DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
         run: |
           python <<'PY'
           import os
@@ -288,6 +336,8 @@ jobs:
           results_dir = Path("TestResults")
           trx_files = sorted(results_dir.rglob("*.trx"))
           outcome = os.environ.get("TEST_OUTCOME", "unknown")
+          diagnostics_dir = Path(os.environ["DIAGNOSTICS_DIR"])
+          diagnostics_logs = sorted(diagnostics_dir.rglob("*.log")) if diagnostics_dir.exists() else []
 
           def parse_dt(value: str):
               if not value:
@@ -347,10 +397,19 @@ jobs:
               f"| Failed | {totals['failed']} |",
               f"| Skipped | {totals['skipped']} |",
               f"| Duration | {duration} |",
+              f"| Diagnostics directory | `{diagnostics_dir}` |",
+              f"| Diagnostics log files | {len(diagnostics_logs)} |",
+              "| Diagnostics artifact | `ci-diagnostics-logs-windows` |",
           ]
 
           if not trx_files:
               lines.extend(["", "_No TRX test result files were generated._"])
+
+          if diagnostics_logs:
+              lines.extend(["", "### Diagnostics logs", ""])
+              lines.extend(f"- `{log_path}`" for log_path in diagnostics_logs)
+          else:
+              lines.extend(["", "_No diagnostics log files were generated._"])
 
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write("\n".join(lines) + "\n")

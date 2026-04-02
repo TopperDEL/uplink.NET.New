@@ -23,6 +23,7 @@ public class MultipartUploadService : IMultipartUploadService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var trace = _access.Trace("uplink_begin_upload", ("bucket", bucketName), ("key", objectKey));
             try
             {
                 var opts = new UplinkInterop.UplinkUploadOptions
@@ -36,9 +37,18 @@ public class MultipartUploadService : IMultipartUploadService
                 {
                     if (result.error != nint.Zero)
                     {
-                        var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        trace?.NativeError(msg, code);
                         throw new MultipartUploadFailedException(msg);
                     }
+
+                    if (result.info == nint.Zero)
+                    {
+                        trace?.Fail("Native library returned a null upload info result without an error.");
+                        throw new MultipartUploadFailedException("Native library returned a null upload info result without an error.");
+                    }
+
+                    trace?.Success();
                     return UplinkInterop.MarshalUploadInfo(result.info);
                 }
                 finally
@@ -60,6 +70,7 @@ public class MultipartUploadService : IMultipartUploadService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var trace = _access.Trace("uplink_commit_upload", ("bucket", bucketName), ("key", objectKey), ("uploadId", uploadId));
             try
             {
                 // Build native custom metadata
@@ -115,12 +126,19 @@ public class MultipartUploadService : IMultipartUploadService
                     var commitResult = new CommitUploadResult();
                     if (result.error != nint.Zero)
                     {
-                        var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                        trace?.NativeError(msg, code);
                         commitResult.Error = msg;
                     }
                     else if (result.object_ != nint.Zero)
                     {
                         commitResult.Object = UplinkInterop.MarshalObject(result.object_);
+                        trace?.Success();
+                    }
+                    else
+                    {
+                        trace?.Fail("Native library returned neither an error nor an object result.");
+                        commitResult.Error = "Native library returned neither an error nor an object result.";
                     }
                     return commitResult;
                 }
@@ -141,15 +159,19 @@ public class MultipartUploadService : IMultipartUploadService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var trace = _access.Trace("uplink_abort_upload", ("bucket", bucketName), ("key", objectKey), ("uploadId", uploadId));
             try
             {
                 var errPtr = UplinkInterop.uplink_abort_upload(
                     projectLease.Handle, bucketName, objectKey, uploadId);
                 if (errPtr != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                    var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+                    trace?.NativeError(msg, code);
                     throw new AbortUploadFailedException(msg);
                 }
+
+                trace?.Success();
             }
             finally
             {
@@ -165,6 +187,7 @@ public class MultipartUploadService : IMultipartUploadService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var trace = _access.Trace("uplink_upload_part", ("bucket", bucketName), ("key", objectKey), ("uploadId", uploadId), ("partNumber", partNumber));
             try
             {
                 var partResult = UplinkInterop.uplink_upload_part(
@@ -172,12 +195,20 @@ public class MultipartUploadService : IMultipartUploadService
 
                 if (partResult.error != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref partResult.error);
+                    var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref partResult.error);
+                    trace?.NativeError(msg, code);
                     UplinkInterop.uplink_free_part_upload_result(partResult);
                     throw new MultipartUploadFailedException(msg);
                 }
 
                 var partHandle = partResult.part_upload;
+                if (partHandle == nint.Zero)
+                {
+                    trace?.Fail("Native library returned a null multipart upload handle without an error.");
+                    UplinkInterop.uplink_free_part_upload_result(partResult);
+                    throw new MultipartUploadFailedException("Native library returned a null multipart upload handle without an error.");
+                }
+
                 var uploadResult = new PartUploadResult();
                 try
                 {
@@ -194,7 +225,8 @@ public class MultipartUploadService : IMultipartUploadService
                         {
                             if (writeResult.error != nint.Zero)
                             {
-                                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                                trace?.NativeError(msg, code);
                                 uploadResult.Error = msg;
                                 return uploadResult;
                             }
@@ -202,6 +234,7 @@ public class MultipartUploadService : IMultipartUploadService
                             var bytesWritten = (int)(nuint)writeResult.bytes_written;
                             if (bytesWritten == 0)
                             {
+                                trace?.Fail("Multipart upload part write stalled: 0 bytes written without error.");
                                 uploadResult.Error = "Multipart upload part write stalled: 0 bytes written without error. This may indicate a connection issue or native upload buffer problem.";
                                 return uploadResult;
                             }
@@ -219,8 +252,13 @@ public class MultipartUploadService : IMultipartUploadService
                     var commitErr = UplinkInterop.uplink_part_upload_commit(partHandle);
                     if (commitErr != nint.Zero)
                     {
-                        var (msg, _) = UplinkInterop.ConsumeError(commitErr);
+                        var (msg, code) = UplinkInterop.ConsumeError(commitErr);
+                        trace?.NativeError(msg, code);
                         uploadResult.Error = msg;
+                    }
+                    else
+                    {
+                        trace?.Success();
                     }
 
                     return uploadResult;
@@ -241,12 +279,16 @@ public class MultipartUploadService : IMultipartUploadService
     {
         return Task.Run(() =>
         {
+            using var trace = _access.Trace("uplink_part_upload_set_etag", ("partHandle", partUpload.Handle));
             var errPtr = UplinkInterop.uplink_part_upload_set_etag(partUpload.Handle, eTag);
             if (errPtr != nint.Zero)
             {
-                var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+                trace?.NativeError(msg, code);
                 throw new SetETagFailedException(msg);
             }
+
+            trace?.Success();
         });
     }
 
@@ -254,14 +296,24 @@ public class MultipartUploadService : IMultipartUploadService
     {
         return Task.Run(() =>
         {
+            using var trace = _access.Trace("uplink_part_upload_info", ("partHandle", partUpload.Handle));
             var result = UplinkInterop.uplink_part_upload_info(partUpload.Handle);
             try
             {
                 if (result.error != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                    var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                    trace?.NativeError(msg, code);
                     throw new MultipartUploadFailedException(msg);
                 }
+
+                if (result.part == nint.Zero)
+                {
+                    trace?.Fail("Native library returned a null part info result without an error.");
+                    throw new MultipartUploadFailedException("Native library returned a null part info result without an error.");
+                }
+
+                trace?.Success();
                 return UplinkInterop.MarshalPart(result.part);
             }
             finally
@@ -277,6 +329,7 @@ public class MultipartUploadService : IMultipartUploadService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var trace = _access.Trace("uplink_list_uploads", ("bucket", bucketName), ("prefix", listUploadOptions.Prefix ?? string.Empty));
             var prefix = Marshal.StringToCoTaskMemUTF8(listUploadOptions.Prefix ?? string.Empty);
             var cursor = Marshal.StringToCoTaskMemUTF8(listUploadOptions.Cursor ?? string.Empty);
             try
@@ -293,6 +346,12 @@ public class MultipartUploadService : IMultipartUploadService
                 var list = new UploadsList();
                 try
                 {
+                    if (iterator == nint.Zero)
+                    {
+                        trace?.Fail("Native library returned a null upload iterator without an error.");
+                        throw new MultipartUploadFailedException("Native library returned a null upload iterator without an error.");
+                    }
+
                     while (UplinkInterop.uplink_upload_iterator_next(iterator))
                     {
                         nint infoPtr = UplinkInterop.uplink_upload_iterator_item(iterator);
@@ -302,9 +361,12 @@ public class MultipartUploadService : IMultipartUploadService
                     nint errPtr = UplinkInterop.uplink_upload_iterator_err(iterator);
                     if (errPtr != nint.Zero)
                     {
-                        var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                        var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+                        trace?.NativeError(msg, code);
                         throw new MultipartUploadFailedException(msg);
                     }
+
+                    trace?.Success();
                 }
                 finally
                 {
@@ -329,6 +391,7 @@ public class MultipartUploadService : IMultipartUploadService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var trace = _access.Trace("uplink_list_upload_parts", ("bucket", bucketName), ("key", objectKey), ("uploadId", uploadId));
             var nativeOpts = new UplinkInterop.UplinkListUploadPartsOptions
             {
                 cursor = ResolvePartCursor(listUploadPartOptions)
@@ -340,6 +403,12 @@ public class MultipartUploadService : IMultipartUploadService
             var list = new UploadPartsList();
             try
             {
+                if (iterator == nint.Zero)
+                {
+                    trace?.Fail("Native library returned a null upload part iterator without an error.");
+                    throw new MultipartUploadFailedException("Native library returned a null upload part iterator without an error.");
+                }
+
                 while (UplinkInterop.uplink_part_iterator_next(iterator))
                 {
                     nint partPtr = UplinkInterop.uplink_part_iterator_item(iterator);
@@ -349,9 +418,12 @@ public class MultipartUploadService : IMultipartUploadService
                 nint errPtr = UplinkInterop.uplink_part_iterator_err(iterator);
                 if (errPtr != nint.Zero)
                 {
-                    var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                    var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+                    trace?.NativeError(msg, code);
                     throw new MultipartUploadFailedException(msg);
                 }
+
+                trace?.Success();
             }
             finally
             {
