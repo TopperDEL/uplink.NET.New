@@ -22,7 +22,7 @@ internal sealed class UplinkDiagnosticsSession
             return null;
 
         var resolvedPath = string.IsNullOrWhiteSpace(logFilePath)
-            ? Path.Combine(Path.GetTempPath(), $"uplink.net-diagnostics-{Environment.ProcessId}.log")
+            ? Path.Combine(Path.GetTempPath(), $"uplink-net-diagnostics-{Environment.ProcessId}.log")
             : Path.GetFullPath(logFilePath);
 
         return new UplinkDiagnosticsSession(resolvedPath);

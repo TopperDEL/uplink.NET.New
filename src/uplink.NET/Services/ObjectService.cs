@@ -93,11 +93,11 @@ public class ObjectService : IObjectService
     // ── Chunked upload ─────────────────────────────────────────────────────────
 
     public unsafe Task<ChunkedUploadOperation> UploadObjectChunkedAsync(
-        string bucketName, string key,
+        string bucketName, string objectKey,
         UploadOptions? uploadOptions, CustomMetadata? customMetadata)
     {
         var projectLease = _access.AcquireProjectLease();
-        using var trace = _access.Trace("uplink_upload_object", ("bucket", bucketName), ("key", key));
+        using var trace = _access.Trace("uplink_upload_object", ("bucket", bucketName), ("key", objectKey));
         var opts = new UplinkInterop.UplinkUploadOptions
         {
             expires = UplinkInterop.DateTimeToUnix(uploadOptions?.Expires)
@@ -105,7 +105,7 @@ public class ObjectService : IObjectService
 
         UplinkInterop.UplinkUploadResult uploadResult;
         uploadResult = UplinkInterop.uplink_upload_object(
-            projectLease.Handle, bucketName, key, &opts);
+            projectLease.Handle, bucketName, objectKey, &opts);
 
         if (uploadResult.error != nint.Zero)
         {
@@ -129,12 +129,12 @@ public class ObjectService : IObjectService
         // Set custom metadata if supplied
         if (customMetadata?.Entries.Count > 0)
         {
-            using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", bucketName), ("key", key));
+            using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", bucketName), ("key", objectKey));
             SetCustomMetadataNative(uploadHandle, customMetadata, metadataTrace);
         }
 
         trace?.Success();
-        return Task.FromResult(new ChunkedUploadOperation(uploadHandle, key, projectLease, _access));
+        return Task.FromResult(new ChunkedUploadOperation(uploadHandle, objectKey, projectLease, _access));
     }
 
     // ── List ──────────────────────────────────────────────────────────────────
