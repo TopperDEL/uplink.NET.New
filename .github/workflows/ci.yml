@@ -1,4 +1,4 @@
-name: Linux Integration Tests
+name: Integration Tests
 
 env:
   UPLINK_C_REF: v1.10.1
@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test-linux:
-    name: Build Linux native runtime and run tests
+  build-native-linux:
+    name: Build Linux native runtime
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,8 +31,60 @@ jobs:
           git clone --branch "$UPLINK_C_REF" --depth 1 https://github.com/storj/uplink-c.git $HOME/uplink-c
           cd $HOME/uplink-c
           make build
-          mkdir -p "$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native"
-          cp .build/libuplink.so "$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native/libstorj_uplink.so"
+          mkdir -p "$GITHUB_WORKSPACE/native/linux-x64"
+          cp .build/libuplink.so "$GITHUB_WORKSPACE/native/linux-x64/libstorj_uplink.so"
+
+      - name: Upload Linux native runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-x64
+          path: native/linux-x64/
+
+  build-native-windows:
+    name: Build Windows native runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - uses: mlugg/setup-zig@v2
+
+      - name: Build uplink-c
+        shell: bash
+        run: |
+          git clone --branch "$UPLINK_C_REF" --depth 1 https://github.com/storj/uplink-c.git $HOME/uplink-c
+          cd $HOME/uplink-c
+          export GOOS=windows
+          export GOARCH=amd64
+          export CGO_ENABLED=1
+          export CC="zig cc -target x86_64-windows-gnu"
+          make build
+          mkdir -p "$GITHUB_WORKSPACE/native/win-x64"
+          cp .build/libuplink.dll "$GITHUB_WORKSPACE/native/win-x64/storj_uplink.dll"
+
+      - name: Upload Windows native runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-win-x64
+          path: native/win-x64/
+
+  build-and-test-linux:
+    name: Build .NET library and run tests on Linux
+    runs-on: ubuntu-latest
+    needs:
+      - build-native-linux
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download Linux native runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64
+          path: src/uplink.NET/runtimes/linux-x64/native
 
       - name: Restore
         run: dotnet restore uplink.NET.sln
@@ -68,7 +120,145 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: ci-test-results
+          name: ci-test-results-linux
+          path: TestResults/
+          if-no-files-found: warn
+
+      - name: Summarize test results
+        if: ${{ always() }}
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ steps.run_tests.outcome }}
+        run: |
+          python <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from datetime import datetime
+          from pathlib import Path
+
+          results_dir = Path("TestResults")
+          trx_files = sorted(results_dir.rglob("*.trx"))
+          outcome = os.environ.get("TEST_OUTCOME", "unknown")
+
+          def parse_dt(value: str):
+              if not value:
+                  return None
+              return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+          totals = {
+              "total": 0,
+              "executed": 0,
+              "passed": 0,
+              "failed": 0,
+              "skipped": 0,
+          }
+          duration_seconds = 0.0
+
+          for trx_file in trx_files:
+              root = ET.parse(trx_file).getroot()
+              namespace = {"trx": root.tag.split("}")[0].strip("{")} if root.tag.startswith("{") else {}
+              times = root.find(".//trx:Times", namespace) if namespace else root.find(".//Times")
+              unit_test_results = root.findall(".//trx:UnitTestResult", namespace) if namespace else root.findall(".//UnitTestResult")
+
+              for unit_test_result in unit_test_results:
+                  outcome_name = unit_test_result.attrib.get("outcome", "")
+                  totals["total"] += 1
+
+                  if outcome_name == "Passed":
+                      totals["executed"] += 1
+                      totals["passed"] += 1
+                  elif outcome_name in {"Failed", "Error", "Timeout", "Aborted"}:
+                      totals["executed"] += 1
+                      totals["failed"] += 1
+                  elif outcome_name in {"NotExecuted", "NotRunnable"}:
+                      totals["skipped"] += 1
+                  else:
+                      totals["executed"] += 1
+
+              if times is not None:
+                  start = parse_dt(times.attrib.get("start"))
+                  finish = parse_dt(times.attrib.get("finish"))
+                  if start and finish:
+                      duration_seconds += max((finish - start).total_seconds(), 0.0)
+
+          minutes, seconds = divmod(int(duration_seconds), 60)
+          hours, minutes = divmod(minutes, 60)
+          duration = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+          lines = [
+              "## Test results",
+              "",
+              "| Metric | Value |",
+              "| --- | --- |",
+              f"| Outcome | {outcome} |",
+              f"| Test result files | {len(trx_files)} |",
+              f"| Total | {totals['total']} |",
+              f"| Executed | {totals['executed']} |",
+              f"| Passed | {totals['passed']} |",
+              f"| Failed | {totals['failed']} |",
+              f"| Skipped | {totals['skipped']} |",
+              f"| Duration | {duration} |",
+          ]
+
+          if not trx_files:
+              lines.extend(["", "_No TRX test result files were generated._"])
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines) + "\n")
+          PY
+
+  build-and-test-windows:
+    name: Build .NET library and run tests on Windows
+    runs-on: windows-latest
+    needs:
+      - build-native-windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download Windows native runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: native-win-x64
+          path: src/uplink.NET/runtimes/win-x64/native
+
+      - name: Restore
+        run: dotnet restore uplink.NET.sln
+
+      - name: Build
+        run: dotnet build uplink.NET.sln -c Release --no-restore -p:StorjUplinkVersion="$env:UPLINK_C_REF"
+
+      - name: Detect integration test configuration
+        id: integration_test_config
+        shell: bash
+        env:
+          TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
+          TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+        run: |
+          if [[ -n "$TEST_ACCESS_GRANT" && -n "$TEST_BUCKET" ]]; then
+            echo 'message=Integration secrets detected.' >> "$GITHUB_OUTPUT"
+          else
+            echo 'message=Integration secrets missing; Storj integration tests will be skipped by xUnit.' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Integration test configuration
+        shell: pwsh
+        run: Write-Output "${{ steps.integration_test_config.outputs.message }}"
+
+      - name: Run test suite
+        id: run_tests
+        env:
+          TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
+          TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=windows-integration-tests"
+
+      - name: Upload test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-results-windows
           path: TestResults/
           if-no-files-found: warn
 
