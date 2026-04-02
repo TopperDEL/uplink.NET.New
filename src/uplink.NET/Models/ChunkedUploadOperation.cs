@@ -37,13 +37,19 @@ public class ChunkedUploadOperation : IDisposable
             var writeResult = UplinkInterop.WithPinnedBuffer(
                 chunk, 0, chunk.Length,
                 (ptr, len) => UplinkInterop.uplink_upload_write(_uploadHandle, (void*)ptr, len));
-
-            if (writeResult.error != nint.Zero)
+            try
             {
-                var (msg, _) = UplinkInterop.ConsumeError(writeResult.error);
-                Failed       = true;
-                ErrorMessage = msg;
-                return false;
+                if (writeResult.error != nint.Zero)
+                {
+                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                    Failed       = true;
+                    ErrorMessage = msg;
+                    return false;
+                }
+            }
+            finally
+            {
+                UplinkInterop.uplink_free_write_result(writeResult);
             }
         }
 

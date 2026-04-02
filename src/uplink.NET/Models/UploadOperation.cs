@@ -173,12 +173,20 @@ public class UploadOperation : IDisposable
         var writeResult = UplinkInterop.WithPinnedBuffer(
             _data, offset, count,
             (ptr, len) => UplinkInterop.uplink_upload_write(handle, (void*)ptr, len));
-        if (writeResult.error != nint.Zero)
+        try
         {
-            var (msg, _) = UplinkInterop.ConsumeError(writeResult.error);
-            return (0, msg);
+            if (writeResult.error != nint.Zero)
+            {
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                return (0, msg);
+            }
+
+            return ((uint)(nuint)writeResult.bytes_written, null);
         }
-        return ((uint)(nuint)writeResult.bytes_written, null);
+        finally
+        {
+            UplinkInterop.uplink_free_write_result(writeResult);
+        }
     }
 
     private static void AbortNativeUpload(nint handle)

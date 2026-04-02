@@ -173,15 +173,22 @@ public class DownloadStream : Stream
                 (nuint)buffer.Length);
         }
 
-        int bytesRead = (int)(nuint)readResult.bytes_read;
-        if (readResult.error != nint.Zero)
+        try
         {
-            var (msg, code) = UplinkInterop.ConsumeError(readResult.error);
-            bool isEof = code == UplinkInterop.EndOfFileErrorCode
-                || msg.Contains("EOF", StringComparison.OrdinalIgnoreCase);
-            return (bytesRead, isEof, isEof ? null : msg);
-        }
+            int bytesRead = (int)(nuint)readResult.bytes_read;
+            if (readResult.error != nint.Zero)
+            {
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref readResult.error);
+                bool isEof = code == UplinkInterop.EndOfFileErrorCode
+                    || msg.Contains("EOF", StringComparison.OrdinalIgnoreCase);
+                return (bytesRead, isEof, isEof ? null : msg);
+            }
 
-        return (bytesRead, bytesRead == 0, null);
+            return (bytesRead, bytesRead == 0, null);
+        }
+        finally
+        {
+            UplinkInterop.uplink_free_read_result(readResult);
+        }
     }
 }

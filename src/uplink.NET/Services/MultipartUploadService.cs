@@ -190,22 +190,28 @@ public class MultipartUploadService : IMultipartUploadService
                         var writeResult = UplinkInterop.WithPinnedBuffer(
                             partBytes, totalBytesWritten, bytesToWrite,
                             (ptr, len) => UplinkInterop.uplink_part_upload_write(partHandle, (void*)ptr, len));
-
-                        if (writeResult.error != nint.Zero)
+                        try
                         {
-                            var (msg, _) = UplinkInterop.ConsumeError(writeResult.error);
-                            uploadResult.Error = msg;
-                            return uploadResult;
-                        }
+                            if (writeResult.error != nint.Zero)
+                            {
+                                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                                uploadResult.Error = msg;
+                                return uploadResult;
+                            }
 
-                        var bytesWritten = (int)(nuint)writeResult.bytes_written;
-                        if (bytesWritten == 0)
+                            var bytesWritten = (int)(nuint)writeResult.bytes_written;
+                            if (bytesWritten == 0)
+                            {
+                                uploadResult.Error = "Multipart upload part write stalled: 0 bytes written without error. This may indicate a connection issue or native upload buffer problem.";
+                                return uploadResult;
+                            }
+
+                            totalBytesWritten += bytesWritten;
+                        }
+                        finally
                         {
-                            uploadResult.Error = "Multipart upload part write stalled: 0 bytes written without error. This may indicate a connection issue or native upload buffer problem.";
-                            return uploadResult;
+                            UplinkInterop.uplink_free_write_result(writeResult);
                         }
-
-                        totalBytesWritten += bytesWritten;
                     }
 
                     uploadResult.BytesWritten = (uint)totalBytesWritten;
