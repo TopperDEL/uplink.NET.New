@@ -117,24 +117,47 @@ public class ObjectService : IObjectService
         }
 
         var uploadHandle = uploadResult.upload;
+        uploadResult.upload = nint.Zero;
+        var uploadHandleTransferred = false;
 
-        if (uploadHandle == nint.Zero)
+        try
         {
-            trace?.Fail("Native library returned a null upload handle without an error.");
-            UplinkInterop.uplink_free_upload_result(uploadResult);
+            if (uploadHandle == nint.Zero)
+            {
+                trace?.Fail("Native library returned a null upload handle without an error.");
+                throw new Exception("Failed to begin upload: native library returned a null upload handle without an error.");
+            }
+
+            // Set custom metadata if supplied
+            if (customMetadata?.Entries.Count > 0)
+            {
+                using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", bucketName), ("key", objectKey));
+                SetCustomMetadataNative(uploadHandle, customMetadata, metadataTrace);
+            }
+
+            trace?.Success();
+            uploadHandleTransferred = true;
+            return Task.FromResult(new ChunkedUploadOperation(uploadHandle, objectKey, projectLease, _access));
+        }
+        catch
+        {
+            if (uploadHandle != nint.Zero)
+            {
+                var abortErr = UplinkInterop.uplink_upload_abort(uploadHandle);
+                if (abortErr != nint.Zero)
+                    UplinkInterop.ConsumeError(abortErr);
+
+                UplinkInterop.FreeUploadHandle(uploadHandle);
+            }
+
             projectLease.Dispose();
-            throw new Exception("Failed to begin upload: native library returned a null upload handle without an error.");
+            throw;
         }
-
-        // Set custom metadata if supplied
-        if (customMetadata?.Entries.Count > 0)
+        finally
         {
-            using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", bucketName), ("key", objectKey));
-            SetCustomMetadataNative(uploadHandle, customMetadata, metadataTrace);
+            if (!uploadHandleTransferred)
+                UplinkInterop.uplink_free_upload_result(uploadResult);
         }
-
-        trace?.Success();
-        return Task.FromResult(new ChunkedUploadOperation(uploadHandle, objectKey, projectLease, _access));
     }
 
     // ── List ──────────────────────────────────────────────────────────────────

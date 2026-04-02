@@ -439,6 +439,9 @@ internal static unsafe partial class UplinkInterop
     [LibraryImport(LibName)]
     internal static partial nint uplink_part_upload_commit(nint part_upload); // returns UplinkError*
 
+    [LibraryImport(LibName)]
+    internal static partial nint uplink_part_upload_abort(nint part_upload); // returns UplinkError*
+
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
     internal static partial nint uplink_part_upload_set_etag(nint part_upload, string etag); // returns UplinkError*
 

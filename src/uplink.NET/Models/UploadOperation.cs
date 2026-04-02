@@ -138,6 +138,7 @@ public class UploadOperation : IDisposable
             string? commitError = CommitNativeUpload(uploadHandle);
             if (commitError != null)
             {
+                AbortNativeUpload(uploadHandle);
                 SetFailed(commitError);
                 return;
             }

@@ -210,6 +210,7 @@ public class MultipartUploadService : IMultipartUploadService
                 }
 
                 var uploadResult = new PartUploadResult();
+                var commitSucceeded = false;
                 try
                 {
                     var totalBytesWritten = 0;
@@ -258,6 +259,7 @@ public class MultipartUploadService : IMultipartUploadService
                     }
                     else
                     {
+                        commitSucceeded = true;
                         trace?.Success();
                     }
 
@@ -265,6 +267,13 @@ public class MultipartUploadService : IMultipartUploadService
                 }
                 finally
                 {
+                    if (!commitSucceeded && partHandle != nint.Zero)
+                    {
+                        var abortErr = UplinkInterop.uplink_part_upload_abort(partHandle);
+                        if (abortErr != nint.Zero)
+                            UplinkInterop.ConsumeError(abortErr);
+                    }
+
                     UplinkInterop.FreePartUploadHandle(partHandle);
                 }
             }
