@@ -169,7 +169,7 @@ public class MultipartUploadService : IMultipartUploadService
                     var bytesWritten = (int)(nuint)writeResult.bytes_written;
                     if (bytesWritten == 0)
                     {
-                        uploadResult.Error = "Multipart upload part write returned zero bytes without reporting an error.";
+                        uploadResult.Error = "Multipart upload part write stalled: 0 bytes written without error. This may indicate a connection issue or native upload buffer problem.";
                         return uploadResult;
                     }
 
