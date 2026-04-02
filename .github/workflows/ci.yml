@@ -2,6 +2,10 @@ name: Linux Integration Tests
 
 env:
   UPLINK_C_REF: v1.10.1
+  TEST_RESULTS_DIR: ${{ github.workspace }}/TestResults
+  CRASH_DIAGNOSTICS_DIR: ${{ github.workspace }}/TestResults/crash-diagnostics
+  CORE_DUMP_DIR: ${{ github.workspace }}/TestResults/crash-diagnostics/core
+  NATIVE_SYMBOL_DIR: ${{ github.workspace }}/TestResults/crash-diagnostics/native-symbols
 
 on:
   push:
@@ -26,13 +30,29 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Install Linux crash analysis tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb binutils
+
       - name: Build uplink-c
         run: |
           git clone --branch "$UPLINK_C_REF" --depth 1 https://github.com/storj/uplink-c.git $HOME/uplink-c
           cd $HOME/uplink-c
           make build
-          mkdir -p "$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native"
+          mkdir -p \
+            "$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native" \
+            "$NATIVE_SYMBOL_DIR"
           cp .build/libuplink.so "$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native/libstorj_uplink.so"
+          cp .build/libuplink.so "$NATIVE_SYMBOL_DIR/libstorj_uplink.so"
+          objcopy --only-keep-debug .build/libuplink.so "$NATIVE_SYMBOL_DIR/libstorj_uplink.so.debug" || true
+
+      - name: Configure Linux crash diagnostics
+        shell: bash
+        run: |
+          mkdir -p "$CORE_DUMP_DIR"
+          sudo sysctl -w kernel.core_pattern="$CORE_DUMP_DIR/core.%e.%p.%t"
+          sudo sysctl -w fs.suid_dumpable=2
 
       - name: Restore
         run: dotnet restore uplink.NET.sln
@@ -62,7 +82,55 @@ jobs:
           TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
-        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests"
+          DOTNET_DbgEnableMiniDump: 1
+          DOTNET_DbgMiniDumpType: 4
+          DOTNET_DbgMiniDumpName: ${{ env.CRASH_DIAGNOSTICS_DIR }}/dotnet-dump.%p.%e.%t
+        run: |
+          ulimit -c unlimited
+          dotnet test uplink.NET.sln -c Release --no-build \
+            --results-directory "$TEST_RESULTS_DIR" \
+            --logger "trx;LogFilePrefix=linux-integration-tests" \
+            --diag "$CRASH_DIAGNOSTICS_DIR/vstest-diag.log" \
+            --blame-crash \
+            --blame-crash-dump-type full
+
+      - name: Analyze crash artifacts
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          analysis_dir="$CRASH_DIAGNOSTICS_DIR/analysis"
+          native_library="$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native/libstorj_uplink.so"
+          mkdir -p "$analysis_dir"
+
+          mapfile -t dump_files < <(find "$CRASH_DIAGNOSTICS_DIR" -type f \( -name '*.dmp' -o -name '*.core' -o -name 'core.*' \) | sort)
+
+          if [[ "${#dump_files[@]}" -eq 0 ]]; then
+            echo "No crash dumps found."
+            exit 0
+          fi
+
+          for dump_file in "${dump_files[@]}"; do
+            dump_name="$(basename "$dump_file")"
+            {
+              echo "Dump: $dump_file"
+              file "$dump_file" || true
+              echo
+              echo "Native library:"
+              file "$native_library" || true
+            } > "$analysis_dir/$dump_name.metadata.txt"
+
+            gdb -batch \
+              -ex 'set pagination off' \
+              -ex 'set debuginfod enabled off' \
+              -ex "file $(command -v dotnet)" \
+              -ex "core-file $dump_file" \
+              -ex 'info sharedlibrary' \
+              -ex 'info threads' \
+              -ex 'thread apply all bt full' \
+              > "$analysis_dir/$dump_name.gdb.txt" 2>&1 || true
+          done
 
       - name: Upload test results
         if: ${{ always() }}

@@ -6,6 +6,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_PROJECT="$REPO_ROOT/tests/uplink.NET.IntegrationTests/uplink.NET.IntegrationTests.csproj"
 RUNTIMES_ROOT="$REPO_ROOT/src/uplink.NET/runtimes"
 UPLINK_C_REF="${UPLINK_C_REF:-v1.10.1}"
+TEST_RESULTS_DIR="${TEST_RESULTS_DIR:-$REPO_ROOT/TestResults}"
+CRASH_DIAGNOSTICS_DIR="${CRASH_DIAGNOSTICS_DIR:-$TEST_RESULTS_DIR/crash-diagnostics}"
+CORE_DUMP_DIR="${CORE_DUMP_DIR:-$CRASH_DIAGNOSTICS_DIR/core}"
+NATIVE_SYMBOL_DIR="${NATIVE_SYMBOL_DIR:-$CRASH_DIAGNOSTICS_DIR/native-symbols}"
 
 if [[ -z "${TEST_ACCESS_GRANT:-}" || -z "${TEST_BUCKET:-}" ]]; then
   echo "TEST_ACCESS_GRANT and TEST_BUCKET must be set before running integration tests." >&2
@@ -77,4 +81,37 @@ else
   export "$library_path_name=$target_dir"
 fi
 
-DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 DOTNET_CLI_HOME=/tmp dotnet test "$REPO_ROOT/uplink.NET.sln" -c Release -p:StorjUplinkVersion="$storj_uplink_version"
+dotnet_test_args=(
+  "$REPO_ROOT/uplink.NET.sln"
+  -c Release
+  -p:StorjUplinkVersion="$storj_uplink_version"
+  --results-directory "$TEST_RESULTS_DIR"
+  --logger "trx;LogFilePrefix=linux-integration-tests"
+)
+
+if [[ "$rid" == linux-* ]]; then
+  mkdir -p "$CORE_DUMP_DIR" "$NATIVE_SYMBOL_DIR"
+  cp "$uplink_c_dir/.build/$source_name" "$NATIVE_SYMBOL_DIR/$target_name"
+
+  if command -v objcopy >/dev/null 2>&1; then
+    objcopy --only-keep-debug "$uplink_c_dir/.build/$source_name" "$NATIVE_SYMBOL_DIR/$target_name.debug" || true
+  fi
+
+  export DOTNET_DbgEnableMiniDump=1
+  export DOTNET_DbgMiniDumpType=4
+  export DOTNET_DbgMiniDumpName="$CRASH_DIAGNOSTICS_DIR/dotnet-dump.%p.%e.%t"
+
+  if ulimit -c unlimited 2>/dev/null; then
+    echo "Enabled unlimited core dumps for the current shell."
+  else
+    echo "Could not enable unlimited core dumps; continuing with .NET crash dumps only." >&2
+  fi
+
+  dotnet_test_args+=(
+    --diag "$CRASH_DIAGNOSTICS_DIR/vstest-diag.log"
+    --blame-crash
+    --blame-crash-dump-type full
+  )
+fi
+
+DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 DOTNET_CLI_HOME=/tmp dotnet test "${dotnet_test_args[@]}"
