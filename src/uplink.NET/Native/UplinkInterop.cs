@@ -279,7 +279,7 @@ internal static unsafe partial class UplinkInterop
         nint access,
         UplinkPermission permission,
         UplinkSharePrefix* prefixes,
-        int prefixes_count);
+        nint prefixes_count);
 
     [LibraryImport(LibName)]
     internal static partial void uplink_free_string_result(UplinkStringResult result);

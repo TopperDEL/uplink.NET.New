@@ -158,7 +158,7 @@ public class Access : IDisposable
             else
             {
                 fixed (UplinkInterop.UplinkSharePrefix* prefixesPtr = nativePrefixes)
-                    result = UplinkInterop.uplink_access_share(_accessHandle, nativePermission, prefixesPtr, nativePrefixes.Length);
+                    result = UplinkInterop.uplink_access_share(_accessHandle, nativePermission, prefixesPtr, checked((nint)nativePrefixes.Length));
             }
 
             try
