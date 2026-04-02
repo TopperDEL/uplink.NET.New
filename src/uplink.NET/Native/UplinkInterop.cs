@@ -11,7 +11,7 @@ internal static unsafe partial class UplinkInterop
 {
     private const string LibName = "storj_uplink";
     internal const int EndOfFileErrorCode = -1;
-    internal static bool DisableNativeCleanupForTesting => true;
+    internal static bool ForceDisableNativeCleanupForDebugging => true;
 
     // ── Error ────────────────────────────────────────────────────────────────
     [StructLayout(LayoutKind.Sequential)]
@@ -505,121 +505,121 @@ internal static unsafe partial class UplinkInterop
     // ── Helpers ───────────────────────────────────────────────────────────────
     internal static void uplink_free_access_result(UplinkAccessResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_access_result_native(result);
     }
 
     internal static void uplink_free_string_result(UplinkStringResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_string_result_native(result);
     }
 
     internal static nint uplink_close_project(nint project) =>
-        DisableNativeCleanupForTesting ? nint.Zero : uplink_close_project_native(project);
+        ForceDisableNativeCleanupForDebugging ? nint.Zero : uplink_close_project_native(project);
 
     internal static void uplink_free_project_result(UplinkProjectResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_project_result_native(result);
     }
 
     internal static void uplink_free_bucket_iterator(nint iterator)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_bucket_iterator_native(iterator);
     }
 
     internal static void uplink_free_bucket_result(UplinkBucketResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_bucket_result_native(result);
     }
 
     internal static void uplink_free_upload_result(UplinkUploadResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_upload_result_native(result);
     }
 
     internal static nint uplink_close_download(nint download) =>
-        DisableNativeCleanupForTesting ? nint.Zero : uplink_close_download_native(download);
+        ForceDisableNativeCleanupForDebugging ? nint.Zero : uplink_close_download_native(download);
 
     internal static void uplink_free_download_result(UplinkDownloadResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_download_result_native(result);
     }
 
     internal static void uplink_free_object_iterator(nint iterator)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_object_iterator_native(iterator);
     }
 
     internal static void uplink_free_object_result(UplinkObjectResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_object_result_native(result);
     }
 
     internal static void uplink_free_upload_info_result(UplinkUploadInfoResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_upload_info_result_native(result);
     }
 
     internal static void uplink_free_commit_upload_result(UplinkCommitUploadResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_commit_upload_result_native(result);
     }
 
     internal static void uplink_free_part_upload_result(UplinkPartUploadResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_part_upload_result_native(result);
     }
 
     internal static void uplink_free_part_result(UplinkPartResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_part_result_native(result);
     }
 
     internal static void uplink_free_upload_iterator(nint iterator)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_upload_iterator_native(iterator);
     }
 
     internal static void uplink_free_part_iterator(nint iterator)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_part_iterator_native(iterator);
     }
 
     internal static void uplink_free_error(nint error)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_error_native(error);
     }
 
     internal static void uplink_free_write_result(UplinkWriteResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_write_result_native(result);
     }
 
     internal static void uplink_free_read_result(UplinkReadResult result)
     {
-        if (!DisableNativeCleanupForTesting)
+        if (!ForceDisableNativeCleanupForDebugging)
             uplink_free_read_result_native(result);
     }
 
     internal static void FreeCoTaskMem(nint ptr)
     {
-        if (!DisableNativeCleanupForTesting && ptr != nint.Zero)
+        if (ptr != nint.Zero && !ForceDisableNativeCleanupForDebugging)
             Marshal.FreeCoTaskMem(ptr);
     }
 
