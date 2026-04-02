@@ -15,5 +15,14 @@ public static class Uplink
            ?? string.Empty;
 
     public static string GetRuntimeInfo()
-        => $".NET={RuntimeInformation.FrameworkDescription}; OS={RuntimeInformation.OSDescription}; ProcessArchitecture={RuntimeInformation.ProcessArchitecture}; OSArchitecture={RuntimeInformation.OSArchitecture}; PID={Environment.ProcessId}; storj_uplink={GetStorjVersion()}";
+    {
+        var framework = RuntimeInformation.FrameworkDescription;
+        var os = RuntimeInformation.OSDescription;
+        var processArchitecture = RuntimeInformation.ProcessArchitecture;
+        var osArchitecture = RuntimeInformation.OSArchitecture;
+        var pid = Environment.ProcessId;
+        var storjVersion = GetStorjVersion();
+
+        return $".NET={framework}; OS={os}; ProcessArchitecture={processArchitecture}; OSArchitecture={osArchitecture}; PID={pid}; storj_uplink={storjVersion}";
+    }
 }

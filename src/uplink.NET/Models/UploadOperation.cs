@@ -1,5 +1,6 @@
 using uplink.NET.Exceptions;
 using uplink.NET.Native;
+using NativeCallTrace = uplink.NET.Diagnostics.UplinkDiagnosticsSession.NativeCallTrace;
 
 namespace uplink.NET.Models;
 
@@ -228,7 +229,7 @@ public class UploadOperation : IDisposable
     }
 
     private static unsafe void SetCustomMetadataNative(
-        nint uploadHandle, CustomMetadata metadata, uplink.NET.Diagnostics.UplinkDiagnosticsSession.NativeCallTrace? trace)
+        nint uploadHandle, CustomMetadata metadata, NativeCallTrace? trace)
     {
         var entries = metadata.Entries
             .Select(kv => new UplinkInterop.UplinkCustomMetadataEntry

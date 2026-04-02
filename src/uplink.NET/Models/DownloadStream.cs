@@ -23,7 +23,8 @@ public class DownloadStream : Stream
         if (downloadHandle == nint.Zero)
             throw new ArgumentException("A valid native download handle is required.", nameof(downloadHandle));
         ArgumentNullException.ThrowIfNull(projectLease);
-        _access = access ?? throw new ArgumentNullException(nameof(access));
+        ArgumentNullException.ThrowIfNull(access);
+        _access = access;
 
         _downloadHandle = downloadHandle;
         _projectLease = projectLease;

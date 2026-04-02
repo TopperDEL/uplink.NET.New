@@ -36,13 +36,22 @@ internal sealed class UplinkDiagnosticsSession
         if (_headerWritten)
             return;
 
-        var directory = Path.GetDirectoryName(LogFilePath!);
-        if (!string.IsNullOrWhiteSpace(directory))
-            Directory.CreateDirectory(directory);
+        try
+        {
+            var directory = Path.GetDirectoryName(LogFilePath!);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
 
-        File.AppendAllText(
-            LogFilePath!,
-            $"# uplink.NET diagnostics {DateTimeOffset.UtcNow:O} pid={Environment.ProcessId} runtime=\"{Escape(Uplink.GetRuntimeInfo())}\"{Environment.NewLine}");
+            File.AppendAllText(
+                LogFilePath!,
+                $"# uplink.NET diagnostics {DateTimeOffset.UtcNow:O} pid={Environment.ProcessId} runtime=\"{Escape(Uplink.GetRuntimeInfo())}\"{Environment.NewLine}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            throw new InvalidOperationException(
+                $"Failed to initialize uplink.NET diagnostics log '{LogFilePath}'. {ex.GetType().Name}: {ex.Message}",
+                ex);
+        }
 
         _headerWritten = true;
     }
@@ -67,7 +76,7 @@ internal sealed class UplinkDiagnosticsSession
             builder.Append(" stage=").Append(stage);
 
             if (duration.HasValue)
-                builder.Append(" durationMs=").Append(duration.Value.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+                builder.Append(" durationMs=").Append(duration.Value.TotalMilliseconds.ToString("0.000###", System.Globalization.CultureInfo.InvariantCulture));
 
             if (!string.IsNullOrEmpty(context))
                 builder.Append(" context=\"").Append(Escape(context)).Append('"');
@@ -80,7 +89,16 @@ internal sealed class UplinkDiagnosticsSession
 
             builder.Append(Environment.NewLine);
 
-            File.AppendAllText(LogFilePath!, builder.ToString());
+            try
+            {
+                File.AppendAllText(LogFilePath!, builder.ToString());
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to write uplink.NET diagnostics log '{LogFilePath}'. {ex.GetType().Name}: {ex.Message}",
+                    ex);
+            }
         }
     }
 

@@ -32,7 +32,7 @@ public class Access : IDisposable
             throw new ArgumentNullException(nameof(accessGrant));
 
         _config = CloneConfig(config);
-        _diagnostics = UplinkDiagnosticsSession.Create(_config?.EnableDiagnostics ?? false, _config?.DiagnosticsLogFilePath);
+        _diagnostics = CreateDiagnosticsSession(_config);
 
         using var trace = Trace("uplink_parse_access");
         var accessResult = UplinkInterop.uplink_parse_access(accessGrant);
@@ -78,7 +78,7 @@ public class Access : IDisposable
             throw new ArgumentException("Access handle must not be null.", nameof(accessHandle));
 
         _config = CloneConfig(config);
-        _diagnostics = UplinkDiagnosticsSession.Create(_config?.EnableDiagnostics ?? false, _config?.DiagnosticsLogFilePath);
+        _diagnostics = CreateDiagnosticsSession(_config);
         _accessHandle = accessHandle;
 
         using var trace = Trace("uplink_config_open_project");
@@ -297,6 +297,18 @@ public class Access : IDisposable
             EnableDiagnostics = config.EnableDiagnostics,
             DiagnosticsLogFilePath = config.DiagnosticsLogFilePath
         };
+    }
+
+    private static UplinkDiagnosticsSession? CreateDiagnosticsSession(Config? config)
+    {
+        try
+        {
+            return UplinkDiagnosticsSession.Create(config?.EnableDiagnostics ?? false, config?.DiagnosticsLogFilePath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            throw new AccessException($"Failed to initialize uplink.NET diagnostics. {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private static nint OpenProjectHandle(nint accessHandle, Config? config, UplinkDiagnosticsSession? diagnostics)

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using NativeCallTrace = uplink.NET.Diagnostics.UplinkDiagnosticsSession.NativeCallTrace;
 using uplink.NET.Exceptions;
 using uplink.NET.Interfaces;
 using uplink.NET.Models;
@@ -127,7 +128,10 @@ public class ObjectService : IObjectService
 
         // Set custom metadata if supplied
         if (customMetadata?.Entries.Count > 0)
-            SetCustomMetadataNative(uploadHandle, customMetadata, trace);
+        {
+            using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", bucketName), ("key", key));
+            SetCustomMetadataNative(uploadHandle, customMetadata, metadataTrace);
+        }
 
         trace?.Success();
         return Task.FromResult(new ChunkedUploadOperation(uploadHandle, key, projectLease, _access));
@@ -438,7 +442,7 @@ public class ObjectService : IObjectService
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static unsafe void SetCustomMetadataNative(
-        nint uploadHandle, CustomMetadata metadata, uplink.NET.Diagnostics.UplinkDiagnosticsSession.NativeCallTrace? trace = null)
+        nint uploadHandle, CustomMetadata metadata, NativeCallTrace? trace = null)
     {
         var entries = metadata.Entries
             .Select(kv => new UplinkInterop.UplinkCustomMetadataEntry
