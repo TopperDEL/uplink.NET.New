@@ -31,6 +31,10 @@ public interface IObjectService
     Task<DownloadOperation> DownloadObjectAsync(string bucketName, string key, bool startImmediately);
     Task<DownloadOperation> DownloadObjectAsync(string bucketName, string key, DownloadOptions downloadOptions, bool startImmediately);
 
+    // ── Copy / move ───────────────────────────────────────────────────────────
+    Task<StorjObject> CopyObjectAsync(string sourceBucketName, string sourceKey, string destinationBucketName, string destinationKey);
+    Task MoveObjectAsync(string sourceBucketName, string sourceKey, string destinationBucketName, string destinationKey);
+
     // ── Delete ────────────────────────────────────────────────────────────────
     Task DeleteObjectAsync(string bucketName, string key);
 }

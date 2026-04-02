@@ -398,6 +398,24 @@ internal static unsafe partial class UplinkInterop
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
     internal static partial UplinkObjectResult uplink_delete_object(nint project, string bucket, string key);
 
+    [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial UplinkObjectResult uplink_copy_object(
+        nint project,
+        string old_bucket_name,
+        string old_object_key,
+        string new_bucket_name,
+        string new_object_key,
+        nint options);
+
+    [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial nint uplink_move_object(
+        nint project,
+        string old_bucket_name,
+        string old_object_key,
+        string new_bucket_name,
+        string new_object_key,
+        nint options);
+
     [LibraryImport(LibName)]
     internal static partial void uplink_free_object_result(UplinkObjectResult result);
 
@@ -582,13 +600,17 @@ internal static unsafe partial class UplinkInterop
         if (objectPtr == nint.Zero)
             return new Models.StorjObject();
         var o = *(UplinkObject*)objectPtr;
-        var obj = new Models.StorjObject
+        var systemMetadata = new Models.SystemMetadata
         {
-            Key           = PtrToString(o.key),
-            IsPrefix      = o.is_prefix,
             Created       = UnixToDateTime(o.system.created),
             Expires       = UnixToDateTime(o.system.expires),
             ContentLength = o.system.content_length
+        };
+        var obj = new Models.StorjObject
+        {
+            Key            = PtrToString(o.key),
+            IsPrefix       = o.is_prefix,
+            SystemMetadata = systemMetadata
         };
         if (o.custom.count > 0 && o.custom.entries != nint.Zero)
             obj.CustomMetadata = MarshalCustomMetadata(o.custom);

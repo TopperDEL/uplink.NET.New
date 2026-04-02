@@ -1,5 +1,8 @@
 name: Linux Integration Tests
 
+env:
+  UPLINK_C_REF: v1.10.1
+
 on:
   push:
     branches:
@@ -25,7 +28,7 @@ jobs:
 
       - name: Build uplink-c
         run: |
-          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          git clone --branch "$UPLINK_C_REF" --depth 1 https://github.com/storj/uplink-c.git $HOME/uplink-c
           cd $HOME/uplink-c
           make build
           mkdir -p "$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native"
@@ -35,7 +38,7 @@ jobs:
         run: dotnet restore uplink.NET.sln
 
       - name: Build
-        run: dotnet build uplink.NET.sln -c Release --no-restore
+        run: dotnet build uplink.NET.sln -c Release --no-restore -p:StorjUplinkVersion="$UPLINK_C_REF"
 
       - name: Detect integration test configuration
         id: integration_test_config

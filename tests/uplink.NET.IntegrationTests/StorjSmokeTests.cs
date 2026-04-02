@@ -215,6 +215,52 @@ public class StorjSmokeTests
         }
     }
 
+    [StorjIntegrationFact]
+    public async Task CopyAndMoveObject_roundtrip_succeeds_and_exposes_system_metadata()
+    {
+        using var context = IntegrationTestEnvironment.CreateContext();
+        var bucketService = new BucketService(context.Access);
+        var objectService = new ObjectService(context.Access);
+        var sourceKey = $"integration-tests/{Guid.NewGuid():N}-source.bin";
+        var copiedKey = $"integration-tests/{Guid.NewGuid():N}-copied.bin";
+        var movedKey = $"integration-tests/{Guid.NewGuid():N}-moved.bin";
+        var payload = IntegrationTestEnvironment.CreatePayload(8 * 1024);
+
+        try
+        {
+            await bucketService.EnsureBucketAsync(context.BucketName);
+
+            var upload = await objectService.UploadObjectAsync(context.BucketName, sourceKey, payload, startImmediately: false);
+            var uploadTask = upload.StartUploadAsync();
+            Assert.NotNull(uploadTask);
+            await uploadTask;
+
+            var sourceObject = await objectService.GetObjectAsync(context.BucketName, sourceKey);
+            Assert.Equal(payload.Length, sourceObject.SystemMetadata.ContentLength);
+            Assert.Equal(sourceObject.ContentLength, sourceObject.SystemMetadata.ContentLength);
+            Assert.Equal(sourceObject.Created, sourceObject.SystemMetadata.Created);
+            Assert.Equal(sourceObject.Expires, sourceObject.SystemMetadata.Expires);
+
+            var copiedObject = await objectService.CopyObjectAsync(context.BucketName, sourceKey, context.BucketName, copiedKey);
+            Assert.Equal(copiedKey, copiedObject.Key);
+            Assert.Equal(payload.Length, copiedObject.SystemMetadata.ContentLength);
+
+            await objectService.MoveObjectAsync(context.BucketName, copiedKey, context.BucketName, movedKey);
+
+            await Assert.ThrowsAsync<ObjectNotFoundException>(() => objectService.GetObjectAsync(context.BucketName, copiedKey));
+
+            var movedObject = await objectService.GetObjectAsync(context.BucketName, movedKey);
+            Assert.Equal(movedKey, movedObject.Key);
+            Assert.Equal(payload.Length, movedObject.SystemMetadata.ContentLength);
+        }
+        finally
+        {
+            await DeleteObjectIfPresentAsync(objectService, context, sourceKey);
+            await DeleteObjectIfPresentAsync(objectService, context, copiedKey);
+            await DeleteObjectIfPresentAsync(objectService, context, movedKey);
+        }
+    }
+
     private static async Task DeleteObjectIfPresentAsync(
         ObjectService objectService,
         IntegrationTestContext context,

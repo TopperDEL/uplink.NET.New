@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_PROJECT="$REPO_ROOT/tests/uplink.NET.IntegrationTests/uplink.NET.IntegrationTests.csproj"
 RUNTIMES_ROOT="$REPO_ROOT/src/uplink.NET/runtimes"
+UPLINK_C_REF="${UPLINK_C_REF:-v1.10.1}"
 
 if [[ -z "${TEST_ACCESS_GRANT:-}" || -z "${TEST_BUCKET:-}" ]]; then
   echo "TEST_ACCESS_GRANT and TEST_BUCKET must be set before running integration tests." >&2
@@ -48,7 +49,7 @@ if [[ -z "$uplink_c_dir" ]]; then
   work_dir="$(mktemp -d)"
   trap 'rm -rf "$work_dir"' EXIT
   uplink_c_dir="$work_dir/uplink-c"
-  git clone --depth 1 https://github.com/storj/uplink-c.git "$uplink_c_dir"
+  git clone --branch "$UPLINK_C_REF" --depth 1 https://github.com/storj/uplink-c.git "$uplink_c_dir"
 fi
 
 if [[ ! -d "$uplink_c_dir" ]]; then
@@ -60,6 +61,8 @@ fi
   cd "$uplink_c_dir"
   make build
 )
+
+storj_uplink_version="$(git -C "$uplink_c_dir" describe --tags --always --dirty)"
 
 target_dir="$RUNTIMES_ROOT/$rid/native"
 mkdir -p "$target_dir"
@@ -74,4 +77,4 @@ else
   export "$library_path_name=$target_dir"
 fi
 
-DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 DOTNET_CLI_HOME=/tmp dotnet test "$REPO_ROOT/uplink.NET.sln" -c Release
+DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 DOTNET_CLI_HOME=/tmp dotnet test "$REPO_ROOT/uplink.NET.sln" -c Release -p:StorjUplinkVersion="$storj_uplink_version"

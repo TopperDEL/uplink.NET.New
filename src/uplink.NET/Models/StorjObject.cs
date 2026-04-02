@@ -8,8 +8,9 @@ public class StorjObject
 {
     public string Key { get; internal set; } = string.Empty;
     public bool IsPrefix { get; internal set; }
-    public DateTime Created { get; internal set; }
-    public DateTime Expires { get; internal set; }
-    public long ContentLength { get; internal set; }
+    public SystemMetadata SystemMetadata { get; internal set; } = new();
+    public DateTime Created => SystemMetadata.Created;
+    public DateTime Expires => SystemMetadata.Expires;
+    public long ContentLength => SystemMetadata.ContentLength;
     public CustomMetadata? CustomMetadata { get; internal set; }
 }
