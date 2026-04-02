@@ -8,6 +8,8 @@ namespace uplink.NET.Services;
 
 public class MultipartUploadService : IMultipartUploadService
 {
+    private const int PartWriteChunkSize = 80 * 1024;
+
     private readonly Access _access;
 
     public MultipartUploadService(Access access)
@@ -155,8 +157,11 @@ public class MultipartUploadService : IMultipartUploadService
                 var totalBytesWritten = 0;
                 while (totalBytesWritten < partBytes.Length)
                 {
+                    var bytesRemaining = partBytes.Length - totalBytesWritten;
+                    var bytesToWrite = Math.Min(PartWriteChunkSize, bytesRemaining);
+
                     var writeResult = UplinkInterop.WithPinnedBuffer(
-                        partBytes, totalBytesWritten, partBytes.Length - totalBytesWritten,
+                        partBytes, totalBytesWritten, bytesToWrite,
                         (ptr, len) => UplinkInterop.uplink_part_upload_write(partHandle, (void*)ptr, len));
 
                     if (writeResult.error != nint.Zero)
