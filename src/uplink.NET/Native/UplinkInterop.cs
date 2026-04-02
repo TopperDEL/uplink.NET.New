@@ -110,7 +110,7 @@ internal static unsafe partial class UplinkInterop
     internal struct UplinkPart
     {
         public uint  part_number;
-        public long  size;
+        public nuint size;
         public long  modified;
         public nint  etag;        // char*
         public nuint etag_length; // size_t
@@ -141,7 +141,6 @@ internal static unsafe partial class UplinkInterop
     {
         public nint  prefix;    // char*
         public nint  cursor;    // char*
-        public byte  delimiter; // char
         [MarshalAs(UnmanagedType.I1)] public bool recursive;
         [MarshalAs(UnmanagedType.I1)] public bool system;
         [MarshalAs(UnmanagedType.I1)] public bool custom;
@@ -158,13 +157,15 @@ internal static unsafe partial class UplinkInterop
     {
         public nint prefix; // char*
         public nint cursor; // char*
+        [MarshalAs(UnmanagedType.I1)] public bool recursive;
+        [MarshalAs(UnmanagedType.I1)] public bool system;
+        [MarshalAs(UnmanagedType.I1)] public bool custom;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct UplinkListUploadPartsOptions
     {
-        public nint  cursor;             // char*
-        public uint  cursor_part_number;
+        public uint cursor;
     }
 
     // ── Result types ─────────────────────────────────────────────────────────
@@ -658,7 +659,7 @@ internal static unsafe partial class UplinkInterop
         return new Models.PartResult
         {
             PartNumber = p.part_number,
-            Size       = p.size,
+            Size       = checked((long)p.size),
             Modified   = UnixToDateTime(p.modified),
             ETag       = PtrToString(p.etag)
         };
