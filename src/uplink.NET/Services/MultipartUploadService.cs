@@ -270,17 +270,9 @@ public class MultipartUploadService : IMultipartUploadService
     {
         return Task.Run(() =>
         {
-            var cursor = listUploadPartOptions.CursorPartNumber;
-            if (cursor == 0 &&
-                !string.IsNullOrWhiteSpace(listUploadPartOptions.Cursor) &&
-                uint.TryParse(listUploadPartOptions.Cursor, out var parsedCursor))
-            {
-                cursor = parsedCursor;
-            }
-
             var nativeOpts = new UplinkInterop.UplinkListUploadPartsOptions
             {
-                cursor = cursor
+                cursor = ResolvePartCursor(listUploadPartOptions)
             };
 
             nint iterator = UplinkInterop.uplink_list_upload_parts(
@@ -309,5 +301,16 @@ public class MultipartUploadService : IMultipartUploadService
 
             return list;
         });
+    }
+
+    private static uint ResolvePartCursor(ListUploadPartsOptions listUploadPartOptions)
+    {
+        if (listUploadPartOptions.CursorPartNumber != 0)
+            return listUploadPartOptions.CursorPartNumber;
+
+        return !string.IsNullOrWhiteSpace(listUploadPartOptions.Cursor) &&
+               uint.TryParse(listUploadPartOptions.Cursor, out var parsedCursor)
+            ? parsedCursor
+            : 0;
     }
 }
