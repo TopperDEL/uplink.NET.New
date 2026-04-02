@@ -360,13 +360,14 @@ public class ObjectServiceTests
     }
 
     [StorjIntegrationFact]
-    public async Task DeleteObject_Fails_OnNotExistingObject()
+    public async Task DeleteObject_OnNotExistingObject_DoesNotThrow()
     {
         using var context = IntegrationTestEnvironment.CreateContext();
         var objectService = new ObjectService(context.Access);
 
-        await Assert.ThrowsAsync<ObjectNotFoundException>(
-            () => objectService.DeleteObjectAsync(context.BucketName, StorjTestHelper.CreateObjectKey("missing-delete")));
+        await objectService.DeleteObjectAsync(
+            context.BucketName,
+            StorjTestHelper.CreateObjectKey("missing-delete"));
     }
 
     [StorjIntegrationFact]

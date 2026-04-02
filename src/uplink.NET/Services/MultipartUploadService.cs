@@ -270,46 +270,47 @@ public class MultipartUploadService : IMultipartUploadService
     {
         return Task.Run(() =>
         {
-            var cursor = Marshal.StringToCoTaskMemUTF8(
-                listUploadPartOptions.Cursor ?? string.Empty);
+            var nativeOpts = new UplinkInterop.UplinkListUploadPartsOptions
+            {
+                cursor = ResolvePartCursor(listUploadPartOptions)
+            };
+
+            nint iterator = UplinkInterop.uplink_list_upload_parts(
+                _access._projectHandle, bucketName, objectKey, uploadId, &nativeOpts);
+
+            var list = new UploadPartsList();
             try
             {
-                var nativeOpts = new UplinkInterop.UplinkListUploadPartsOptions
+                while (UplinkInterop.uplink_part_iterator_next(iterator))
                 {
-                    cursor              = cursor,
-                    cursor_part_number  = listUploadPartOptions.CursorPartNumber
-                };
-
-                nint iterator = UplinkInterop.uplink_list_upload_parts(
-                    _access._projectHandle, bucketName, objectKey, uploadId, &nativeOpts);
-
-                var list = new UploadPartsList();
-                try
-                {
-                    while (UplinkInterop.uplink_part_iterator_next(iterator))
-                    {
-                        nint partPtr = UplinkInterop.uplink_part_iterator_item(iterator);
-                        list.Items.Add(UplinkInterop.MarshalPart(partPtr));
-                    }
-
-                    nint errPtr = UplinkInterop.uplink_part_iterator_err(iterator);
-                    if (errPtr != nint.Zero)
-                    {
-                        var (msg, _) = UplinkInterop.ConsumeError(errPtr);
-                        throw new MultipartUploadFailedException(msg);
-                    }
-                }
-                finally
-                {
-                    UplinkInterop.uplink_free_part_iterator(iterator);
+                    nint partPtr = UplinkInterop.uplink_part_iterator_item(iterator);
+                    list.Items.Add(UplinkInterop.MarshalPart(partPtr));
                 }
 
-                return list;
+                nint errPtr = UplinkInterop.uplink_part_iterator_err(iterator);
+                if (errPtr != nint.Zero)
+                {
+                    var (msg, _) = UplinkInterop.ConsumeError(errPtr);
+                    throw new MultipartUploadFailedException(msg);
+                }
             }
             finally
             {
-                Marshal.FreeCoTaskMem(cursor);
+                UplinkInterop.uplink_free_part_iterator(iterator);
             }
+
+            return list;
         });
+    }
+
+    private static uint ResolvePartCursor(ListUploadPartsOptions listUploadPartOptions)
+    {
+        if (listUploadPartOptions.CursorPartNumber != 0)
+            return listUploadPartOptions.CursorPartNumber;
+
+        return !string.IsNullOrWhiteSpace(listUploadPartOptions.Cursor) &&
+               uint.TryParse(listUploadPartOptions.Cursor, out var parsedCursor)
+            ? parsedCursor
+            : 0;
     }
 }

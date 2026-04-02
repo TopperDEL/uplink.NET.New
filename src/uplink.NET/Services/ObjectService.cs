@@ -139,7 +139,6 @@ public class ObjectService : IObjectService
                 {
                     prefix    = prefix,
                     cursor    = cursor,
-                    delimiter = opts.Delimiter == '\0' ? (byte)0 : (byte)opts.Delimiter,
                     recursive = opts.Recursive,
                     system    = opts.System,
                     custom    = opts.Custom
