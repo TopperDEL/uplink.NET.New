@@ -4,8 +4,12 @@ namespace uplink.NET.IntegrationTests.Infrastructure;
 
 internal static class IntegrationTestEnvironment
 {
+    // Use a prime below 256 so the generated sequence cycles through a wide range of byte values.
+    private const int PrimeModulusForPayloadPattern = 251;
+
     public const string AccessGrantVariableName = "TEST_ACCESS_GRANT";
     public const string BucketVariableName = "TEST_BUCKET";
+    public const int StorjInlinePlacementLimitBytes = 4 * 1024;
 
     public static string? SkipReason
     {
@@ -33,6 +37,17 @@ internal static class IntegrationTestEnvironment
             new Access(accessGrant, new Config { TempDirectory = tempDirectory }),
             bucketName,
             tempDirectory);
+    }
+
+    public static byte[] CreatePayload(int sizeInBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sizeInBytes);
+
+        var payload = new byte[sizeInBytes];
+        for (var index = 0; index < payload.Length; index++)
+            payload[index] = (byte)(index % PrimeModulusForPayloadPattern);
+
+        return payload;
     }
 
     private static string[] GetMissingVariables()

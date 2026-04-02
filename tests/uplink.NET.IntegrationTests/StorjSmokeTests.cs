@@ -7,6 +7,16 @@ namespace uplink.NET.IntegrationTests;
 
 public class StorjSmokeTests
 {
+    public static TheoryData<int> RoundtripObjectSizes => new()
+    {
+        256,
+        IntegrationTestEnvironment.StorjInlinePlacementLimitBytes - 1,
+        IntegrationTestEnvironment.StorjInlinePlacementLimitBytes,
+        IntegrationTestEnvironment.StorjInlinePlacementLimitBytes + 1,
+        8 * 1024,
+        512 * 1024
+    };
+
     [StorjIntegrationFact]
     public async Task Bucket_roundtrip_succeeds_with_real_access_grant()
     {
@@ -54,6 +64,97 @@ public class StorjSmokeTests
         }
 
         await Assert.ThrowsAsync<ObjectNotFoundException>(() => objectService.GetObjectAsync(context.Access, context.BucketName, objectKey));
+    }
+
+    [StorjIntegrationTheory]
+    [MemberData(nameof(RoundtripObjectSizes))]
+    public async Task UploadAndDownload_roundtrip_supports_multiple_sizes(int sizeInBytes)
+    {
+        using var context = IntegrationTestEnvironment.CreateContext();
+        var bucketService = new BucketService(context.Access);
+        var objectService = new ObjectService(context.Access);
+        var objectKey = $"integration-tests/{Guid.NewGuid():N}-{sizeInBytes}.bin";
+        var payload = IntegrationTestEnvironment.CreatePayload(sizeInBytes);
+
+        try
+        {
+            await bucketService.EnsureBucketAsync(context.BucketName);
+
+            var upload = await objectService.UploadObjectAsync(context.Access, context.BucketName, objectKey, payload, startImmediately: false);
+            var uploadTask = upload.StartUploadAsync();
+            Assert.NotNull(uploadTask);
+            await uploadTask;
+
+            Assert.True(upload.Completed, upload.ErrorMessage);
+            Assert.False(upload.Failed);
+            Assert.False(upload.Cancelled);
+            Assert.Equal(payload.Length, upload.BytesSent);
+
+            var storedObject = await objectService.GetObjectAsync(context.Access, context.BucketName, objectKey);
+            Assert.Equal(objectKey, storedObject.Key);
+            Assert.Equal(payload.Length, storedObject.ContentLength);
+
+            var download = await objectService.DownloadObjectAsync(context.Access, context.BucketName, objectKey, startImmediately: false);
+            var downloadTask = download.StartDownloadAsync();
+            Assert.NotNull(downloadTask);
+            await downloadTask;
+
+            Assert.True(download.Completed, download.ErrorMessage);
+            Assert.False(download.Failed);
+            Assert.False(download.Cancelled);
+            Assert.Equal(payload.Length, download.BytesReceived);
+            Assert.Equal(payload, download.DownloadedBytes);
+        }
+        finally
+        {
+            await DeleteObjectIfPresentAsync(objectService, context, objectKey);
+        }
+    }
+
+    [StorjIntegrationTheory]
+    [MemberData(nameof(RoundtripObjectSizes))]
+    public async Task UploadFromStreamAndDownloadAsStream_roundtrip_supports_multiple_sizes(int sizeInBytes)
+    {
+        using var context = IntegrationTestEnvironment.CreateContext();
+        var bucketService = new BucketService(context.Access);
+        var objectService = new ObjectService(context.Access);
+        var objectKey = $"integration-tests/{Guid.NewGuid():N}-{sizeInBytes}-stream.bin";
+        var payload = IntegrationTestEnvironment.CreatePayload(sizeInBytes);
+
+        try
+        {
+            await bucketService.EnsureBucketAsync(context.BucketName);
+
+            using var uploadStream = new MemoryStream(payload, writable: false);
+            var upload = await objectService.UploadObjectAsync(
+                context.Access,
+                context.BucketName,
+                objectKey,
+                uploadStream,
+                uploadOptions: null,
+                customMetadata: null,
+                startImmediately: false);
+            var uploadTask = upload.StartUploadAsync();
+            Assert.NotNull(uploadTask);
+            await uploadTask;
+
+            Assert.True(upload.Completed, upload.ErrorMessage);
+            Assert.False(upload.Failed);
+            Assert.False(upload.Cancelled);
+            Assert.Equal(payload.Length, upload.BytesSent);
+
+            using var downloadStream = await objectService.GetObjectAsStream(context.Access, context.BucketName, objectKey);
+            using var result = new MemoryStream();
+            await downloadStream.CopyToAsync(result);
+
+            Assert.Equal(payload.Length, downloadStream.Length);
+            Assert.Equal(payload.Length, downloadStream.Position);
+            Assert.Equal(payload, result.ToArray());
+        }
+        finally
+        {
+            await DeleteObjectIfPresentAsync(objectService, context, objectKey);
+        }
     }
 
     [StorjIntegrationFact]
@@ -113,6 +214,21 @@ public class StorjSmokeTests
             catch (ObjectNotFoundException)
             {
             }
+        }
+    }
+
+    private static async Task DeleteObjectIfPresentAsync(
+        ObjectService objectService,
+        IntegrationTestContext context,
+        string objectKey)
+    {
+        try
+        {
+            await objectService.DeleteObjectAsync(context.Access, context.BucketName, objectKey);
+        }
+        catch (ObjectNotFoundException)
+        {
+            // The object may not exist if upload/setup failed before it was committed.
         }
     }
 }
