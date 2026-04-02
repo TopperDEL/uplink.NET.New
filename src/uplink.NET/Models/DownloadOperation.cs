@@ -82,6 +82,11 @@ public class DownloadOperation : IDisposable
         if (beginError != null)
         {
             SetFailed(beginError);
+            lock (_startSync)
+            {
+                _projectLease?.Dispose();
+                _projectLease = null;
+            }
             return;
         }
 

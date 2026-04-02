@@ -527,7 +527,13 @@ internal static unsafe partial class UplinkInterop
     internal static void FreeProjectHandle(nint project)
     {
         if (project != nint.Zero)
+        {
+            var errPtr = uplink_close_project(project);
+            if (errPtr != nint.Zero)
+                ConsumeError(errPtr);
+
             uplink_free_project_result(new UplinkProjectResult { project = project, error = nint.Zero });
+        }
     }
 
     internal static void FreeAccessHandle(nint access)
@@ -545,7 +551,13 @@ internal static unsafe partial class UplinkInterop
     internal static void FreeDownloadHandle(nint download)
     {
         if (download != nint.Zero)
+        {
+            var errPtr = uplink_close_download(download);
+            if (errPtr != nint.Zero)
+                ConsumeError(errPtr);
+
             uplink_free_download_result(new UplinkDownloadResult { download = download, error = nint.Zero });
+        }
     }
 
     internal static void FreePartUploadHandle(nint partUpload)

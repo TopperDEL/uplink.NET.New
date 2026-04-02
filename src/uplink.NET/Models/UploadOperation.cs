@@ -92,6 +92,11 @@ public class UploadOperation : IDisposable
         if (beginError != null)
         {
             SetFailed(beginError);
+            lock (_startSync)
+            {
+                _projectLease?.Dispose();
+                _projectLease = null;
+            }
             return;
         }
 
