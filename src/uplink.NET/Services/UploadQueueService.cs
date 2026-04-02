@@ -395,8 +395,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
 
     private void ThrowIfDisposed()
     {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(UploadQueueService));
+        ObjectDisposedException.ThrowIf(_disposed, this);
     }
 
     public void Dispose()
