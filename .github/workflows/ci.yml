@@ -84,7 +84,7 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
           DOTNET_DbgEnableMiniDump: 1
           DOTNET_DbgMiniDumpType: 4
-          DOTNET_DbgMiniDumpName: ${{ env.CRASH_DIAGNOSTICS_DIR }}/dotnet-dump.%p.%e.%t
+          DOTNET_DbgMiniDumpName: ${{ github.workspace }}/TestResults/crash-diagnostics/dotnet-dump.%p.%e.%t
         run: |
           ulimit -c unlimited
           dotnet test uplink.NET.sln -c Release --no-build \
@@ -104,7 +104,7 @@ jobs:
           native_library="$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native/libstorj_uplink.so"
           mkdir -p "$analysis_dir"
 
-          mapfile -t dump_files < <(find "$CRASH_DIAGNOSTICS_DIR" -type f \( -name '*.dmp' -o -name '*.core' -o -name 'core.*' \) | sort)
+          mapfile -t dump_files < <(find "$CRASH_DIAGNOSTICS_DIR" -type f \( -name '*.dmp' -o -name 'core.*' \) | sort)
 
           if [[ "${#dump_files[@]}" -eq 0 ]]; then
             echo "No crash dumps found."
