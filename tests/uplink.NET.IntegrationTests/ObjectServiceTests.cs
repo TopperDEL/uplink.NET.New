@@ -75,7 +75,8 @@ public class ObjectServiceTests
         var objectService = new ObjectService(context.Access);
         var objectKey = StorjTestHelper.CreateObjectKey("upload-with-expiry");
         var payload = IntegrationTestEnvironment.CreatePayload(256);
-        var expectedExpiry = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.AddMinutes(10).ToUnixTimeSeconds()).UtcDateTime;
+        var requestedExpiry = DateTimeOffset.UtcNow.AddMinutes(10);
+        var expectedExpiry = DateTimeOffset.FromUnixTimeSeconds(requestedExpiry.ToUnixTimeSeconds()).UtcDateTime;
 
         try
         {
@@ -85,7 +86,7 @@ public class ObjectServiceTests
                 context.BucketName,
                 objectKey,
                 payload,
-                new UploadOptions { Expires = expectedExpiry },
+                new UploadOptions { Expires = requestedExpiry.UtcDateTime },
                 startImmediately: false);
 
             var uploadTask = upload.StartUploadAsync();
@@ -97,7 +98,7 @@ public class ObjectServiceTests
 
             var storedObject = await objectService.GetObjectAsync(context.BucketName, objectKey);
             Assert.Equal(expectedExpiry, storedObject.Expires);
-            Assert.Equal(storedObject.Expires, storedObject.SystemMetadata.Expires);
+            Assert.Equal(expectedExpiry, storedObject.SystemMetadata.Expires);
         }
         finally
         {
