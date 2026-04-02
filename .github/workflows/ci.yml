@@ -224,6 +224,10 @@ jobs:
           name: native-win-x64
           path: src/uplink.NET/runtimes/win-x64/native
 
+      - name: Add Windows native runtime to PATH
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value "$env:GITHUB_WORKSPACE\\src\\uplink.NET\\runtimes\\win-x64\\native"
+
       - name: Restore
         run: dotnet restore uplink.NET.sln
 
