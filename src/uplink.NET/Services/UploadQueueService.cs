@@ -281,9 +281,12 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
         _cts?.Cancel();
         try
         {
-            _processingTask?.GetAwaiter().GetResult();
+            _processingTask?.Wait(TimeSpan.FromSeconds(5));
         }
         catch (OperationCanceledException)
+        {
+        }
+        catch (AggregateException)
         {
         }
         catch (Exception)
