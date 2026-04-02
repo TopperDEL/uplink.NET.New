@@ -23,7 +23,8 @@ internal static class StorjTestHelper
         if (string.IsNullOrWhiteSpace(normalizedCategory))
             normalizedCategory = "test";
 
-        return $"uplink-{normalizedCategory}-{Guid.NewGuid():N[..20]}";
+        var suffix = Guid.NewGuid().ToString("N")[..20];
+        return $"uplink-{normalizedCategory}-{suffix}";
     }
 
     public static async Task UploadBytesAsync(

@@ -26,7 +26,7 @@ public class AccessTests
         using var context = IntegrationTestEnvironment.CreateContext();
         var serialized = context.Access.Serialize();
         var replacement = serialized[^1] == 'A' ? 'B' : 'A';
-        var invalidSerialized = string.Concat(serialized.AsSpan(0, serialized.Length - 1), replacement);
+        var invalidSerialized = $"{serialized[..^1]}{replacement}";
 
         Assert.Throws<AccessException>(() => new Access(invalidSerialized));
     }

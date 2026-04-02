@@ -217,7 +217,7 @@ public class MultipartUploadServiceTests
                 partBytes);
 
             Assert.True(string.IsNullOrEmpty(partResult.Error), partResult.Error);
-            Assert.Equal(length, partResult.BytesWritten);
+            Assert.Equal((uint)length, partResult.BytesWritten);
             uploadedPartCount++;
         }
 
