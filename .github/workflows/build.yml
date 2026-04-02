@@ -194,6 +194,22 @@ jobs:
 
           & dotnet @buildArgs
 
+      - name: Detect integration test configuration
+        id: integration_test_config
+        shell: bash
+        env:
+          TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
+          TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+        run: |
+          if [[ -n "$TEST_ACCESS_GRANT" && -n "$TEST_BUCKET" ]]; then
+            echo 'message=Integration secrets detected.' >> "$GITHUB_OUTPUT"
+          else
+            echo 'message=Integration secrets missing; Storj integration tests are expected to be reported as skipped.' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Integration test configuration
+        run: echo "${{ steps.integration_test_config.outputs.message }}"
+
       - name: Run integration tests
         id: run_tests
         env:
