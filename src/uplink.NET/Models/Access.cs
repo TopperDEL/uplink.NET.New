@@ -345,14 +345,19 @@ public class Access : IDisposable
     {
         lock (_lifetimeSync)
         {
-            if (_activeProjectLeases > 0)
-                _activeProjectLeases--;
+            try
+            {
+                if (projectHandle != nint.Zero)
+                    UplinkInterop.FreeProjectHandle(projectHandle);
+            }
+            finally
+            {
+                if (_activeProjectLeases > 0)
+                    _activeProjectLeases--;
 
-            if (projectHandle != nint.Zero)
-                UplinkInterop.FreeProjectHandle(projectHandle);
-
-            if (_disposeRequested && _activeProjectLeases == 0)
-                ReleaseHandlesNoLock();
+                if (_disposeRequested && _activeProjectLeases == 0)
+                    ReleaseHandlesNoLock();
+            }
         }
     }
 
