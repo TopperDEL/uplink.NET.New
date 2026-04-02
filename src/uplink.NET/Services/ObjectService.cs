@@ -226,10 +226,7 @@ public class ObjectService : IObjectService
             finally
             {
                 if (handle != nint.Zero)
-                {
-                    UplinkInterop.CloseDownloadHandle(handle);
                     UplinkInterop.FreeDownloadHandle(handle);
-                }
             }
         });
     }

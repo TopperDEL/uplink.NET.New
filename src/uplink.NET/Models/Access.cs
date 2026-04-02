@@ -305,7 +305,6 @@ public class Access : IDisposable
 
         if (_projectHandle != nint.Zero)
         {
-            UplinkInterop.CloseProjectHandle(_projectHandle);
             UplinkInterop.FreeProjectHandle(_projectHandle);
             _projectHandle = nint.Zero;
         }

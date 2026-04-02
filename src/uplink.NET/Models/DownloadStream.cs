@@ -140,7 +140,6 @@ public class DownloadStream : Stream
 
             if (_downloadHandle != nint.Zero)
             {
-                UplinkInterop.CloseDownloadHandle(_downloadHandle);
                 UplinkInterop.FreeDownloadHandle(_downloadHandle);
                 _downloadHandle = nint.Zero;
             }

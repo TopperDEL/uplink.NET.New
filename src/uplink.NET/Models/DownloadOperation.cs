@@ -111,7 +111,6 @@ public class DownloadOperation : IDisposable
         }
         finally
         {
-            UplinkInterop.CloseDownloadHandle(downloadHandle);
             UplinkInterop.FreeDownloadHandle(downloadHandle);
         }
     }
