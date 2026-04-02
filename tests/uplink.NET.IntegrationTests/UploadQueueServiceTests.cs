@@ -78,7 +78,7 @@ public class UploadQueueServiceTests
     }
 
     [StorjIntegrationFact]
-    public async Task UploadsWithInteruptionAndEvents()
+    public async Task UploadsWithInterruptionAndEvents()
     {
         using var context = IntegrationTestEnvironment.CreateContext();
         var bucketService = new BucketService(context.Access);
@@ -144,7 +144,7 @@ public class UploadQueueServiceTests
     }
 
     [StorjIntegrationFact]
-    public async Task UploadsWithInteruptionAndRetry()
+    public async Task UploadsWithInterruptionAndRetry()
     {
         using var context = IntegrationTestEnvironment.CreateContext();
         var bucketService = new BucketService(context.Access);
@@ -154,9 +154,16 @@ public class UploadQueueServiceTests
         var objectKey = StorjTestHelper.CreateObjectKey("queue-retry");
         var payload = IntegrationTestEnvironment.CreatePayload(2_048);
         var events = new List<QueueChangeType>();
+        var syncRoot = new object();
         await using var queueService = new UploadQueueService(Path.Combine(context.TempDirectory, "retry.sqlite"));
 
-        queueService.UploadQueueChangedEvent += (changeType, _) => events.Add(changeType);
+        queueService.UploadQueueChangedEvent += (changeType, _) =>
+        {
+            lock (syncRoot)
+            {
+                events.Add(changeType);
+            }
+        };
 
         try
         {
@@ -181,8 +188,11 @@ public class UploadQueueServiceTests
 
             var downloaded = await StorjTestHelper.DownloadBytesAsync(objectService, bucketName, objectKey);
             Assert.Equal(payload, downloaded);
-            Assert.Contains(QueueChangeType.EntryUpdated, events);
-            Assert.Contains(QueueChangeType.EntryRemoved, events);
+            lock (syncRoot)
+            {
+                Assert.Contains(QueueChangeType.EntryUpdated, events);
+                Assert.Contains(QueueChangeType.EntryRemoved, events);
+            }
         }
         finally
         {
