@@ -228,7 +228,12 @@ jobs:
 
       - name: Add Windows native runtime to PATH
         shell: pwsh
-        run: Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:GITHUB_WORKSPACE $env:WINDOWS_NATIVE_RUNTIME_DIR)
+        run: |
+          $nativeRuntimeDir = Join-Path $env:GITHUB_WORKSPACE $env:WINDOWS_NATIVE_RUNTIME_DIR
+          if (-not (Test-Path -LiteralPath $nativeRuntimeDir)) {
+            throw "Windows native runtime directory not found: $nativeRuntimeDir"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $nativeRuntimeDir
 
       - name: Restore
         run: dotnet restore uplink.NET.sln
