@@ -41,13 +41,13 @@ public class Access : IDisposable
             if (accessResult.error != nint.Zero)
             {
                 var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref accessResult.error);
-                trace.NativeError(msg, code);
+                trace?.NativeError(msg, code);
                 throw new AccessException($"Failed to parse access grant: {msg}");
             }
 
             if (accessResult.access == nint.Zero)
             {
-                trace.Fail("Native library returned a null access handle without an error.");
+                trace?.Fail("Native library returned a null access handle without an error.");
                 throw new AccessException("Failed to parse access grant: native library returned a null access handle.");
             }
 
@@ -56,8 +56,8 @@ public class Access : IDisposable
 
             try
             {
-                _projectHandle = OpenProjectHandle(_accessHandle, _config);
-                trace.Success();
+                _projectHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
+                trace?.Success();
             }
             catch
             {
@@ -84,8 +84,8 @@ public class Access : IDisposable
         using var trace = Trace("uplink_config_open_project");
         try
         {
-            _projectHandle = OpenProjectHandle(_accessHandle, _config);
-            trace.Success();
+            _projectHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
+            trace?.Success();
         }
         catch
         {
@@ -107,17 +107,17 @@ public class Access : IDisposable
             if (result.error != nint.Zero)
             {
                 var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                trace.NativeError(msg, code);
+                trace?.NativeError(msg, code);
                 throw new AccessException($"Failed to serialize access grant: {msg}");
             }
 
             if (result.stringValue == nint.Zero)
             {
-                trace.Fail("Native library returned a null serialized access string without an error.");
+                trace?.Fail("Native library returned a null serialized access string without an error.");
                 throw new AccessException("Failed to serialize access grant: native library returned a null string.");
             }
 
-            trace.Success();
+            trace?.Success();
             return UplinkInterop.PtrToString(result.stringValue);
         }
         finally
@@ -183,19 +183,19 @@ public class Access : IDisposable
                 if (result.error != nint.Zero)
                 {
                     var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                    trace.NativeError(msg, code);
+                    trace?.NativeError(msg, code);
                     throw new AccessException($"Failed to share access grant: {msg}");
                 }
 
                 if (result.access == nint.Zero)
                 {
-                    trace.Fail("Native library returned a null shared access handle without an error.");
+                    trace?.Fail("Native library returned a null shared access handle without an error.");
                     throw new AccessException("Failed to share access grant: native library returned a null access handle.");
                 }
 
                 var sharedAccessHandle = result.access;
                 result.access = nint.Zero;
-                trace.Success();
+                trace?.Success();
                 return new Access(sharedAccessHandle, _config);
             }
             finally
@@ -233,11 +233,11 @@ public class Access : IDisposable
                 if (errPtr != nint.Zero)
                 {
                     var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
-                    trace.NativeError(msg, code);
+                    trace?.NativeError(msg, code);
                     throw new AccessException($"Failed to revoke access grant: {msg}");
                 }
 
-                trace.Success();
+                trace?.Success();
             }
             finally
             {
@@ -299,9 +299,8 @@ public class Access : IDisposable
         };
     }
 
-    private static nint OpenProjectHandle(nint accessHandle, Config? config)
+    private static nint OpenProjectHandle(nint accessHandle, Config? config, UplinkDiagnosticsSession? diagnostics)
     {
-        var diagnostics = UplinkDiagnosticsSession.Create(config?.EnableDiagnostics ?? false, config?.DiagnosticsLogFilePath);
         using var trace = diagnostics?.Trace(
             "uplink_config_open_project",
             ("dialTimeoutMilliseconds", config?.DialTimeoutMilliseconds ?? 0),

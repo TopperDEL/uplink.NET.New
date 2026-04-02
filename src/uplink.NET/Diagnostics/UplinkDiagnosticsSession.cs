@@ -36,7 +36,9 @@ internal sealed class UplinkDiagnosticsSession
         if (_headerWritten)
             return;
 
-        Directory.CreateDirectory(Path.GetDirectoryName(LogFilePath!)!);
+        var directory = Path.GetDirectoryName(LogFilePath!);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
 
         File.AppendAllText(
             LogFilePath!,
@@ -104,7 +106,7 @@ internal sealed class UplinkDiagnosticsSession
                 ", ",
                 context
                     .Where(entry => entry.Value != null)
-                    .Select(entry => $"{entry.Key}={Format(entry.Value)}"));
+                    .Select(entry => $"{entry.Key}={Format(entry.Value!)}"));
             _stopwatch = Stopwatch.StartNew();
 
             _session.AppendLine(_operation, "start", _context, null, null, null);
