@@ -25,11 +25,9 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
     public event UploadQueueChangedEventHandler? UploadQueueChangedEvent;
 
     /// <param name="databasePath">Full path to the SQLite database file.</param>
-    /// <param name="objectService">Object service used to perform actual uploads.</param>
-    public UploadQueueService(string databasePath, ObjectService objectService)
+    public UploadQueueService(string databasePath)
     {
         _db = new SQLiteAsyncConnection(databasePath);
-        _ = objectService ?? throw new ArgumentNullException(nameof(objectService));
     }
 
     private async Task EnsureInitializedAsync()
