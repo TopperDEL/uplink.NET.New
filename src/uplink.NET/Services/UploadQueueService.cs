@@ -14,6 +14,9 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
     private const int PartSize          = 5 * 1024 * 1024; // 5 MB per multipart part
     private const int PollingIntervalMs = 2_000;            // poll interval for the background loop
     private const string DiagnosticsEnvironmentVariableName = "UPLINK_NET_ENABLE_DIAGNOSTICS";
+    private static readonly bool DiagnosticsEnabled =
+        string.Equals(Environment.GetEnvironmentVariable(DiagnosticsEnvironmentVariableName), "1", StringComparison.Ordinal) ||
+        string.Equals(Environment.GetEnvironmentVariable(DiagnosticsEnvironmentVariableName), "true", StringComparison.OrdinalIgnoreCase);
 
     private readonly SQLiteAsyncConnection _db;
     private readonly object _processingSync = new();
@@ -382,8 +385,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
 
     private static void LogDiagnostics(string message)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable(DiagnosticsEnvironmentVariableName), "1", StringComparison.Ordinal) &&
-            !string.Equals(Environment.GetEnvironmentVariable(DiagnosticsEnvironmentVariableName), "true", StringComparison.OrdinalIgnoreCase))
+        if (!DiagnosticsEnabled)
             return;
 
         Console.WriteLine($"[UploadQueueService {DateTime.UtcNow:O}] {message}");

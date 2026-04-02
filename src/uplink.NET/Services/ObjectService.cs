@@ -117,6 +117,7 @@ public class ObjectService : IObjectService
         }
 
         var uploadHandle = uploadResult.upload;
+        // Ownership moves to the ChunkedUploadOperation/cleanup path below; the result wrapper must not free it.
         uploadResult.upload = nint.Zero;
         var uploadHandleTransferred = false;
 
