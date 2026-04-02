@@ -8,6 +8,7 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -124,6 +125,8 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
+          UPLINK_NET_SERIALIZE_NATIVE_OPERATIONS: '1'
+          UPLINK_NET_QUEUE_TRACE: '1'
         run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests"
 
       - name: Upload test results
@@ -302,6 +305,8 @@ jobs:
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
+          UPLINK_NET_SERIALIZE_NATIVE_OPERATIONS: '1'
+          UPLINK_NET_QUEUE_TRACE: '1'
         run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=windows-integration-tests"
 
       - name: Upload test results

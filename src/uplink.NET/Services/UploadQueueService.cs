@@ -13,21 +13,29 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
 {
     private const int PartSize          = 5 * 1024 * 1024; // 5 MB per multipart part
     private const int PollingIntervalMs = 2_000;            // poll interval for the background loop
+    private const string QueueTraceVariableName = "UPLINK_NET_QUEUE_TRACE";
 
     private readonly SQLiteAsyncConnection _db;
+    private readonly Config? _accessConfig;
+    private readonly Action<string>? _traceWriter;
+    private readonly object _processingSync = new();
+
     private CancellationTokenSource? _cts;
     private Task? _processingTask;
     private bool _initialized;
     private bool _disposed;
+    private bool _restartRequested;
 
     public bool UploadInProgress { get; private set; }
 
     public event UploadQueueChangedEventHandler? UploadQueueChangedEvent;
 
     /// <param name="databasePath">Full path to the SQLite database file.</param>
-    public UploadQueueService(string databasePath)
+    public UploadQueueService(string databasePath, Config? accessConfig = null, Action<string>? traceWriter = null)
     {
         _db = new SQLiteAsyncConnection(databasePath);
+        _accessConfig = CloneConfig(accessConfig);
+        _traceWriter = traceWriter;
     }
 
     private async Task EnsureInitializedAsync()
@@ -151,22 +159,42 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
 
     public void ProcessQueueInBackground()
     {
-        if (_processingTask != null && !_processingTask.IsCompleted)
-            return;
+        lock (_processingSync)
+        {
+            ThrowIfDisposed();
 
-        _cts = new CancellationTokenSource();
-        _processingTask = Task.Run(() => ProcessLoopAsync(_cts.Token));
+            if (_processingTask != null && !_processingTask.IsCompleted)
+            {
+                if (_cts?.IsCancellationRequested == true)
+                {
+                    _restartRequested = true;
+                    Trace($"Queue restart requested while shutdown is in progress. database={_db.DatabasePath}");
+                }
+
+                return;
+            }
+
+            StartProcessingLoopNoLock();
+        }
     }
 
     public void StopQueueInBackground()
     {
-        _cts?.Cancel();
+        lock (_processingSync)
+        {
+            if (_cts == null)
+                return;
+
+            Trace($"Stopping background queue processing. database={_db.DatabasePath}");
+            _cts.Cancel();
+        }
     }
 
     private async Task ProcessLoopAsync(CancellationToken ct)
     {
         try
         {
+            Trace($"Background queue loop started. database={_db.DatabasePath}");
             await EnsureInitializedAsync().ConfigureAwait(false);
             while (!ct.IsCancellationRequested)
             {
@@ -174,6 +202,8 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
                     .Where(e => !e.Failed)
                     .ToListAsync()
                     .ConfigureAwait(false);
+
+                Trace($"Loaded {entries.Count} queued upload entries. database={_db.DatabasePath}");
 
                 foreach (var entry in entries)
                 {
@@ -187,11 +217,35 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
+        finally
+        {
+            bool restart;
+            lock (_processingSync)
+            {
+                restart = _restartRequested && !_disposed;
+                _restartRequested = false;
+                _cts?.Dispose();
+                _cts = null;
+                _processingTask = null;
+            }
+
+            Trace($"Background queue loop stopped. restart={restart} database={_db.DatabasePath}");
+
+            if (restart)
+            {
+                lock (_processingSync)
+                {
+                    if (!_disposed && _processingTask == null)
+                        StartProcessingLoopNoLock();
+                }
+            }
+        }
     }
 
     private async Task ProcessEntryAsync(UploadQueueEntry entry)
     {
         UploadInProgress = true;
+        Trace($"Processing queued upload entry id={entry.Id} key={entry.Key} bytes={entry.TotalBytes} database={_db.DatabasePath}");
         try
         {
             var data = await _db.Table<UploadQueueEntryData>()
@@ -205,7 +259,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
                 return;
             }
 
-            using var access = new Access(entry.AccessGrant);
+            using var access = new Access(entry.AccessGrant, CreateAccessConfig());
             var objectService = new ObjectService(access);
             CustomMetadata? meta = DeserializeMetadata(entry.CustomMetadataJson);
 
@@ -217,9 +271,10 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
                 meta!,
                 startImmediately: false).ConfigureAwait(false);
 
-            var tcs = new TaskCompletionSource<bool>();
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             uploadOp.UploadOperationEnded += op =>
             {
+                Trace($"Queued upload ended id={entry.Id} key={entry.Key} completed={op.Completed} failed={op.Failed} cancelled={op.Cancelled} error={op.ErrorMessage ?? string.Empty}");
                 if (op.Completed)
                     tcs.TrySetResult(true);
                 else
@@ -233,6 +288,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
                 await _db.DeleteAsync(entry).ConfigureAwait(false);
                 await _db.DeleteAsync(data).ConfigureAwait(false);
                 UploadQueueChangedEvent?.Invoke(QueueChangeType.EntryRemoved, entry);
+                Trace($"Queued upload completed and removed id={entry.Id} key={entry.Key}");
             }
             else
             {
@@ -242,6 +298,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
         }
         catch (Exception ex)
         {
+            Trace($"Queued upload threw id={entry.Id} key={entry.Key} error={ex}");
             await MarkFailedAsync(entry, ex.Message).ConfigureAwait(false);
         }
         finally
@@ -256,6 +313,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
         entry.FailedMessage = message;
         await _db.UpdateAsync(entry).ConfigureAwait(false);
         UploadQueueChangedEvent?.Invoke(QueueChangeType.EntryUpdated, entry);
+        Trace($"Queued upload marked failed id={entry.Id} key={entry.Key} message={message}");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -272,6 +330,72 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
         var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
         if (dict == null) return null;
         return new CustomMetadata { Entries = dict };
+    }
+
+    private static Config? CloneConfig(Config? config)
+    {
+        if (config == null)
+            return null;
+
+        return new Config
+        {
+            UserAgent = config.UserAgent,
+            DialTimeoutMilliseconds = config.DialTimeoutMilliseconds,
+            TempDirectory = config.TempDirectory,
+            EnableDiagnostics = config.EnableDiagnostics,
+            DiagnosticsLogFilePath = config.DiagnosticsLogFilePath,
+            SerializeNativeOperations = config.SerializeNativeOperations
+        };
+    }
+
+    private Config? CreateAccessConfig()
+    {
+        var config = CloneConfig(_accessConfig);
+        if (config == null)
+            return null;
+
+        if (!config.EnableDiagnostics || string.IsNullOrWhiteSpace(config.DiagnosticsLogFilePath))
+            return config;
+
+        var directory = Path.GetDirectoryName(config.DiagnosticsLogFilePath);
+        var fileName = Path.GetFileNameWithoutExtension(config.DiagnosticsLogFilePath);
+        var extension = Path.GetExtension(config.DiagnosticsLogFilePath);
+
+        if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName))
+            return config;
+
+        Directory.CreateDirectory(directory);
+        config.DiagnosticsLogFilePath = Path.Combine(directory, $"{fileName}-{Guid.NewGuid():N}{extension}");
+        return config;
+    }
+
+    private void StartProcessingLoopNoLock()
+    {
+        _cts = new CancellationTokenSource();
+        _processingTask = Task.Run(() => ProcessLoopAsync(_cts.Token));
+        Trace($"Background queue processing requested. database={_db.DatabasePath}");
+    }
+
+    private void Trace(string message)
+    {
+        if (_traceWriter == null && !IsQueueTraceEnabled())
+            return;
+
+        var formattedMessage = $"[{DateTimeOffset.UtcNow:O}] [UploadQueueService] {message}";
+        if (_traceWriter != null)
+            _traceWriter(formattedMessage);
+        else
+            Console.WriteLine(formattedMessage);
+    }
+
+    private static bool IsQueueTraceEnabled()
+        => string.Equals(Environment.GetEnvironmentVariable(QueueTraceVariableName), "1", StringComparison.Ordinal)
+           || string.Equals(Environment.GetEnvironmentVariable(QueueTraceVariableName), "true", StringComparison.OrdinalIgnoreCase);
+
+    private void ThrowIfDisposed()
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(UploadQueueService));
     }
 
     public void Dispose()

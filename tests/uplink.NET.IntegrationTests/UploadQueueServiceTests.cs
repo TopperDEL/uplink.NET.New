@@ -42,7 +42,10 @@ public class UploadQueueServiceTests
         var secondKey = StorjTestHelper.CreateObjectKey("queue-count-second");
         var firstPayload = IntegrationTestEnvironment.CreatePayload(512 * 1_024);
         var secondPayload = IntegrationTestEnvironment.CreatePayload(512 * 1_024);
-        await using var queueService = new UploadQueueService(Path.Combine(context.TempDirectory, "count.sqlite"));
+        await using var queueService = new UploadQueueService(
+            Path.Combine(context.TempDirectory, "count.sqlite"),
+            IntegrationTestEnvironment.CreateQueueAccessConfig(context.TempDirectory),
+            Console.WriteLine);
 
         try
         {
@@ -88,7 +91,10 @@ public class UploadQueueServiceTests
         var secondKey = StorjTestHelper.CreateObjectKey("queue-interrupt-second");
         var events = new List<(QueueChangeType ChangeType, string Key)>();
         var syncRoot = new object();
-        await using var queueService = new UploadQueueService(Path.Combine(context.TempDirectory, "interrupt.sqlite"));
+        await using var queueService = new UploadQueueService(
+            Path.Combine(context.TempDirectory, "interrupt.sqlite"),
+            IntegrationTestEnvironment.CreateQueueAccessConfig(context.TempDirectory),
+            Console.WriteLine);
 
         queueService.UploadQueueChangedEvent += (changeType, entry) =>
         {
@@ -155,7 +161,10 @@ public class UploadQueueServiceTests
         var payload = IntegrationTestEnvironment.CreatePayload(2_048);
         var events = new List<QueueChangeType>();
         var syncRoot = new object();
-        await using var queueService = new UploadQueueService(Path.Combine(context.TempDirectory, "retry.sqlite"));
+        await using var queueService = new UploadQueueService(
+            Path.Combine(context.TempDirectory, "retry.sqlite"),
+            IntegrationTestEnvironment.CreateQueueAccessConfig(context.TempDirectory),
+            Console.WriteLine);
 
         queueService.UploadQueueChangedEvent += (changeType, _) =>
         {
@@ -215,7 +224,10 @@ public class UploadQueueServiceTests
         var metadata = withMetadata
             ? new CustomMetadata { Entries = { ["origin"] = "queue-test", ["size"] = payloadSize.ToString() } }
             : null;
-        await using var queueService = new UploadQueueService(Path.Combine(context.TempDirectory, $"{payloadSize}-{useStreams}-{withMetadata}.sqlite"));
+        await using var queueService = new UploadQueueService(
+            Path.Combine(context.TempDirectory, $"{payloadSize}-{useStreams}-{withMetadata}.sqlite"),
+            IntegrationTestEnvironment.CreateQueueAccessConfig(context.TempDirectory),
+            Console.WriteLine);
 
         try
         {

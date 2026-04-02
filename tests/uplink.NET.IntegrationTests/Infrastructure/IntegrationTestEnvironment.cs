@@ -72,6 +72,9 @@ internal static class IntegrationTestEnvironment
             tempDirectory);
     }
 
+    public static Config CreateQueueAccessConfig(string tempDirectory)
+        => CreateAccessConfig(tempDirectory);
+
     public static byte[] CreatePayload(int sizeInBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sizeInBytes);
