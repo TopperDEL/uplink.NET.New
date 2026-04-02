@@ -279,7 +279,17 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
         if (_disposed) return;
         _disposed = true;
         _cts?.Cancel();
-        try { _processingTask?.GetAwaiter().GetResult(); } catch (OperationCanceledException) { } catch { }
+        try
+        {
+            _processingTask?.GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+            // Disposal is best-effort; avoid throwing from teardown if the background loop faults while cancellation is in progress.
+        }
         _cts?.Dispose();
         _cts = null;
         _processingTask = null;
