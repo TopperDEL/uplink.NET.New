@@ -397,10 +397,13 @@ public class Access : IDisposable
     {
         lock (_lifetimeSync)
         {
+            using var trace = _diagnostics?.Trace("uplink_close_project", ("lease", true));
             try
             {
                 if (projectHandle != nint.Zero)
                     UplinkInterop.FreeProjectHandle(projectHandle);
+
+                trace?.Success();
             }
             finally
             {
@@ -420,14 +423,18 @@ public class Access : IDisposable
 
         if (_projectHandle != nint.Zero)
         {
+            using var trace = _diagnostics?.Trace("uplink_close_project", ("lease", false));
             UplinkInterop.FreeProjectHandle(_projectHandle);
             _projectHandle = nint.Zero;
+            trace?.Success();
         }
 
         if (_accessHandle != nint.Zero)
         {
+            using var trace = _diagnostics?.Trace("uplink_free_access");
             UplinkInterop.FreeAccessHandle(_accessHandle);
             _accessHandle = nint.Zero;
+            trace?.Success();
         }
 
         _disposed = true;

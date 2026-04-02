@@ -11,6 +11,7 @@ internal static unsafe partial class UplinkInterop
 {
     private const string LibName = "storj_uplink";
     internal const int EndOfFileErrorCode = -1;
+    private static readonly object NativeHandleCleanupSync = new();
 
     // ── Error ────────────────────────────────────────────────────────────────
     [StructLayout(LayoutKind.Sequential)]
@@ -531,42 +532,57 @@ internal static unsafe partial class UplinkInterop
     {
         if (project != nint.Zero)
         {
-            var closeErrorPtr = uplink_close_project(project);
-            if (closeErrorPtr != nint.Zero)
-                ConsumeError(closeErrorPtr);
+            lock (NativeHandleCleanupSync)
+            {
+                var closeErrorPtr = uplink_close_project(project);
+                if (closeErrorPtr != nint.Zero)
+                    ConsumeError(closeErrorPtr);
 
-            uplink_free_project_result(new UplinkProjectResult { project = project, error = nint.Zero });
+                uplink_free_project_result(new UplinkProjectResult { project = project, error = nint.Zero });
+            }
         }
     }
 
     internal static void FreeAccessHandle(nint access)
     {
         if (access != nint.Zero)
-            uplink_free_access_result(new UplinkAccessResult { access = access, error = nint.Zero });
+        {
+            lock (NativeHandleCleanupSync)
+                uplink_free_access_result(new UplinkAccessResult { access = access, error = nint.Zero });
+        }
     }
 
     internal static void FreeUploadHandle(nint upload)
     {
         if (upload != nint.Zero)
-            uplink_free_upload_result(new UplinkUploadResult { upload = upload, error = nint.Zero });
+        {
+            lock (NativeHandleCleanupSync)
+                uplink_free_upload_result(new UplinkUploadResult { upload = upload, error = nint.Zero });
+        }
     }
 
     internal static void FreeDownloadHandle(nint download)
     {
         if (download != nint.Zero)
         {
-            var closeErrorPtr = uplink_close_download(download);
-            if (closeErrorPtr != nint.Zero)
-                ConsumeError(closeErrorPtr);
+            lock (NativeHandleCleanupSync)
+            {
+                var closeErrorPtr = uplink_close_download(download);
+                if (closeErrorPtr != nint.Zero)
+                    ConsumeError(closeErrorPtr);
 
-            uplink_free_download_result(new UplinkDownloadResult { download = download, error = nint.Zero });
+                uplink_free_download_result(new UplinkDownloadResult { download = download, error = nint.Zero });
+            }
         }
     }
 
     internal static void FreePartUploadHandle(nint partUpload)
     {
         if (partUpload != nint.Zero)
-            uplink_free_part_upload_result(new UplinkPartUploadResult { part_upload = partUpload, error = nint.Zero });
+        {
+            lock (NativeHandleCleanupSync)
+                uplink_free_part_upload_result(new UplinkPartUploadResult { part_upload = partUpload, error = nint.Zero });
+        }
     }
 
     /// <summary>Reads a UTF-8 string from a native char*.</summary>

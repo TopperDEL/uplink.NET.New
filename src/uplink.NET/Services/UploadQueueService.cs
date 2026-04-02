@@ -13,12 +13,15 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
 {
     private const int PartSize          = 5 * 1024 * 1024; // 5 MB per multipart part
     private const int PollingIntervalMs = 2_000;            // poll interval for the background loop
+    private const string DiagnosticsEnvironmentVariableName = "UPLINK_NET_ENABLE_DIAGNOSTICS";
 
     private readonly SQLiteAsyncConnection _db;
+    private readonly object _processingSync = new();
     private CancellationTokenSource? _cts;
     private Task? _processingTask;
     private bool _initialized;
     private bool _disposed;
+    private bool _restartScheduled;
 
     public bool UploadInProgress { get; private set; }
 
@@ -151,20 +154,51 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
 
     public void ProcessQueueInBackground()
     {
-        if (_processingTask != null && !_processingTask.IsCompleted)
-            return;
+        lock (_processingSync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
 
-        _cts = new CancellationTokenSource();
-        _processingTask = Task.Run(() => ProcessLoopAsync(_cts.Token));
+            if (_processingTask == null || _processingTask.IsCompleted)
+            {
+                StartProcessingLoopNoLock();
+                return;
+            }
+
+            if (_cts?.IsCancellationRequested != true || _restartScheduled)
+                return;
+
+            _restartScheduled = true;
+            LogDiagnostics("Queue restart requested while the previous processing loop is still stopping.");
+            _processingTask.ContinueWith(
+                _ =>
+                {
+                    lock (_processingSync)
+                    {
+                        if (_disposed || !_restartScheduled)
+                            return;
+
+                        _restartScheduled = false;
+                        StartProcessingLoopNoLock();
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default);
+        }
     }
 
     public void StopQueueInBackground()
     {
-        _cts?.Cancel();
+        lock (_processingSync)
+        {
+            LogDiagnostics("Queue stop requested.");
+            _cts?.Cancel();
+        }
     }
 
     private async Task ProcessLoopAsync(CancellationToken ct)
     {
+        LogDiagnostics("Queue processing loop started.");
         try
         {
             await EnsureInitializedAsync().ConfigureAwait(false);
@@ -186,12 +220,18 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            LogDiagnostics("Queue processing loop observed cancellation.");
+        }
+        finally
+        {
+            LogDiagnostics("Queue processing loop stopped.");
         }
     }
 
     private async Task ProcessEntryAsync(UploadQueueEntry entry)
     {
         UploadInProgress = true;
+        LogDiagnostics($"Processing upload queue entry '{entry.Key}'.");
         try
         {
             var data = await _db.Table<UploadQueueEntryData>()
@@ -217,7 +257,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
                 meta!,
                 startImmediately: false).ConfigureAwait(false);
 
-            var tcs = new TaskCompletionSource<bool>();
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             uploadOp.UploadOperationEnded += op =>
             {
                 if (op.Completed)
@@ -225,24 +265,29 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
                 else
                     tcs.TrySetResult(false);
             };
-            _ = uploadOp.StartUploadAsync();
+
+            var uploadTask = uploadOp.StartUploadAsync() ?? Task.CompletedTask;
             bool success = await tcs.Task.ConfigureAwait(false);
+            await uploadTask.ConfigureAwait(false);
 
             if (success)
             {
                 await _db.DeleteAsync(entry).ConfigureAwait(false);
                 await _db.DeleteAsync(data).ConfigureAwait(false);
                 UploadQueueChangedEvent?.Invoke(QueueChangeType.EntryRemoved, entry);
+                LogDiagnostics($"Upload queue entry '{entry.Key}' completed successfully.");
             }
             else
             {
                 await MarkFailedAsync(entry, uploadOp.ErrorMessage ?? "Upload failed")
                     .ConfigureAwait(false);
+                LogDiagnostics($"Upload queue entry '{entry.Key}' failed: {uploadOp.ErrorMessage ?? "Upload failed"}");
             }
         }
         catch (Exception ex)
         {
             await MarkFailedAsync(entry, ex.Message).ConfigureAwait(false);
+            LogDiagnostics($"Upload queue entry '{entry.Key}' threw an exception: {ex.Message}");
         }
         finally
         {
@@ -278,7 +323,11 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
     {
         if (_disposed) return;
         _disposed = true;
-        _cts?.Cancel();
+        lock (_processingSync)
+        {
+            _restartScheduled = false;
+            _cts?.Cancel();
+        }
         try
         {
             _processingTask?.Wait(TimeSpan.FromSeconds(5));
@@ -306,7 +355,11 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
     {
         if (_disposed) return;
         _disposed = true;
-        _cts?.Cancel();
+        lock (_processingSync)
+        {
+            _restartScheduled = false;
+            _cts?.Cancel();
+        }
         if (_processingTask != null)
         {
             try { await _processingTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
@@ -316,5 +369,23 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
         _processingTask = null;
         await _db.CloseAsync().ConfigureAwait(false);
         GC.SuppressFinalize(this);
+    }
+
+    private void StartProcessingLoopNoLock()
+    {
+        _restartScheduled = false;
+        _cts?.Dispose();
+        _cts = new CancellationTokenSource();
+        _processingTask = Task.Run(() => ProcessLoopAsync(_cts.Token));
+        LogDiagnostics("Queue processing loop scheduled.");
+    }
+
+    private static void LogDiagnostics(string message)
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable(DiagnosticsEnvironmentVariableName), "1", StringComparison.Ordinal) &&
+            !string.Equals(Environment.GetEnvironmentVariable(DiagnosticsEnvironmentVariableName), "true", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        Console.WriteLine($"[UploadQueueService {DateTime.UtcNow:O}] {message}");
     }
 }
