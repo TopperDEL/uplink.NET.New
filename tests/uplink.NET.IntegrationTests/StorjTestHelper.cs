@@ -7,10 +7,10 @@ namespace uplink.NET.IntegrationTests;
 internal static class StorjTestHelper
 {
     public static string CreateObjectKey(string category, string extension = "bin")
-        => $"integration-tests/{category}/{Guid.NewGuid():N}.{extension}";
+        => $"integration-tests/{NormalizePathSegment(category)}/{Guid.NewGuid():N}.{extension}";
 
     public static string CreatePrefix(string category)
-        => $"integration-tests/{category}/{Guid.NewGuid():N}/";
+        => $"integration-tests/{NormalizePathSegment(category)}/{Guid.NewGuid():N}/";
 
     public static string CreateBucketName(string category)
     {
@@ -25,6 +25,17 @@ internal static class StorjTestHelper
 
         var suffix = Guid.NewGuid().ToString("N")[..20];
         return $"uplink-{normalizedCategory}-{suffix}";
+    }
+
+    private static string NormalizePathSegment(string value)
+    {
+        var normalized = new string(value
+            .ToLowerInvariant()
+            .Select(character => char.IsLetterOrDigit(character) ? character : '-')
+            .ToArray())
+            .Trim('-');
+
+        return string.IsNullOrWhiteSpace(normalized) ? "test" : normalized;
     }
 
     public static async Task UploadBytesAsync(
