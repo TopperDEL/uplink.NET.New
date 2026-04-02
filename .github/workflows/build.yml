@@ -243,15 +243,23 @@ jobs:
           for trx_file in trx_files:
               root = ET.parse(trx_file).getroot()
               namespace = {"trx": root.tag.split("}")[0].strip("{")} if root.tag.startswith("{") else {}
-              counters = root.find(".//trx:Counters", namespace) if namespace else root.find(".//Counters")
               times = root.find(".//trx:Times", namespace) if namespace else root.find(".//Times")
+              unit_test_results = root.findall(".//trx:UnitTestResult", namespace) if namespace else root.findall(".//UnitTestResult")
 
-              if counters is not None:
-                  totals["total"] += int(counters.attrib.get("total", 0))
-                  totals["executed"] += int(counters.attrib.get("executed", 0))
-                  totals["passed"] += int(counters.attrib.get("passed", 0))
-                  totals["failed"] += int(counters.attrib.get("failed", 0)) + int(counters.attrib.get("error", 0))
-                  totals["skipped"] += int(counters.attrib.get("notExecuted", 0))
+              for unit_test_result in unit_test_results:
+                  outcome_name = unit_test_result.attrib.get("outcome", "")
+                  totals["total"] += 1
+
+                  if outcome_name == "Passed":
+                      totals["executed"] += 1
+                      totals["passed"] += 1
+                  elif outcome_name in {"Failed", "Error", "Timeout", "Aborted"}:
+                      totals["executed"] += 1
+                      totals["failed"] += 1
+                  elif outcome_name in {"NotExecuted", "NotRunnable"}:
+                      totals["skipped"] += 1
+                  else:
+                      totals["executed"] += 1
 
               if times is not None:
                   start = parse_dt(times.attrib.get("start"))
