@@ -8,6 +8,9 @@ internal static class IntegrationTestEnvironment
     private const int PrimeModulusForPayloadPattern = 251;
     private const string EnableDiagnosticsVariableName = "UPLINK_NET_ENABLE_DIAGNOSTICS";
     private const string DiagnosticsDirectoryVariableName = "UPLINK_NET_DIAGNOSTICS_DIR";
+    private const string EnableStressTestsVariableName = "UPLINK_NET_ENABLE_STRESS_TESTS";
+    private const string SerializeNativeOperationsVariableName = "UPLINK_NET_SERIALIZE_NATIVE_OPERATIONS";
+    private const string StressIterationsVariableName = "UPLINK_NET_STRESS_ITERATIONS";
 
     public const string AccessGrantVariableName = "TEST_ACCESS_GRANT";
     public const string BucketVariableName = "TEST_BUCKET";
@@ -21,6 +24,30 @@ internal static class IntegrationTestEnvironment
             return missingVariables.Length == 0
                 ? null
                 : $"Set {string.Join(" and ", missingVariables)} to run Storj integration tests.";
+        }
+    }
+
+    public static string? StressSkipReason
+    {
+        get
+        {
+            if (!OperatingSystem.IsLinux())
+                return "Stress integration tests run on Linux only.";
+
+            return IsStressEnabled()
+                ? SkipReason
+                : $"Set {EnableStressTestsVariableName}=1 to run Storj stress integration tests.";
+        }
+    }
+
+    public static int StressIterations
+    {
+        get
+        {
+            var configuredValue = Environment.GetEnvironmentVariable(StressIterationsVariableName);
+            return int.TryParse(configuredValue, out var parsedValue) && parsedValue > 0
+                ? parsedValue
+                : 10;
         }
     }
 
@@ -73,7 +100,8 @@ internal static class IntegrationTestEnvironment
     {
         var config = new Config
         {
-            TempDirectory = tempDirectory
+            TempDirectory = tempDirectory,
+            SerializeNativeOperations = IsNativeSerializationEnabled()
         };
 
         if (!IsDiagnosticsEnabled())
@@ -89,13 +117,20 @@ internal static class IntegrationTestEnvironment
         config.DiagnosticsLogFilePath = Path.Combine(
             diagnosticsDirectory,
             $"uplink-net-integration-{Guid.NewGuid():N}.log");
-
         return config;
     }
 
     private static bool IsDiagnosticsEnabled()
         => string.Equals(Environment.GetEnvironmentVariable(EnableDiagnosticsVariableName), "1", StringComparison.Ordinal)
            || string.Equals(Environment.GetEnvironmentVariable(EnableDiagnosticsVariableName), "true", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsStressEnabled()
+        => string.Equals(Environment.GetEnvironmentVariable(EnableStressTestsVariableName), "1", StringComparison.Ordinal)
+           || string.Equals(Environment.GetEnvironmentVariable(EnableStressTestsVariableName), "true", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsNativeSerializationEnabled()
+        => string.Equals(Environment.GetEnvironmentVariable(SerializeNativeOperationsVariableName), "1", StringComparison.Ordinal)
+           || string.Equals(Environment.GetEnvironmentVariable(SerializeNativeOperationsVariableName), "true", StringComparison.OrdinalIgnoreCase);
 }
 
 internal sealed class IntegrationTestContext : IDisposable

@@ -22,7 +22,7 @@ public class BucketService : IBucketService
         {
             try
             {
-                return CreateBucket(projectLease.Handle, bucketName);
+                return CreateBucket(projectLease.Handle.DangerousHandle, bucketName);
             }
             finally
             {
@@ -38,7 +38,7 @@ public class BucketService : IBucketService
         {
             try
             {
-                return EnsureBucket(projectLease.Handle, bucketName);
+                return EnsureBucket(projectLease.Handle.DangerousHandle, bucketName);
             }
             finally
             {
@@ -54,7 +54,7 @@ public class BucketService : IBucketService
         {
             try
             {
-                return StatBucket(projectLease.Handle, bucketName);
+                return StatBucket(projectLease.Handle.DangerousHandle, bucketName);
             }
             finally
             {
@@ -70,7 +70,7 @@ public class BucketService : IBucketService
         {
             try
             {
-                return ListBuckets(projectLease.Handle, listBucketsOptions);
+                return ListBuckets(projectLease.Handle.DangerousHandle, listBucketsOptions);
             }
             finally
             {
@@ -86,7 +86,7 @@ public class BucketService : IBucketService
         {
             try
             {
-                DeleteBucket(projectLease.Handle, bucketName);
+                DeleteBucket(projectLease.Handle.DangerousHandle, bucketName);
             }
             finally
             {
@@ -102,7 +102,7 @@ public class BucketService : IBucketService
         {
             try
             {
-                DeleteBucketWithObjects(projectLease.Handle, bucketName);
+                DeleteBucketWithObjects(projectLease.Handle.DangerousHandle, bucketName);
             }
             finally
             {
@@ -200,17 +200,13 @@ public class BucketService : IBucketService
     private unsafe BucketList ListBuckets(nint projectHandle, ListBucketsOptions opts)
     {
         using var trace = _access.Trace("uplink_list_buckets", ("cursor", opts.Cursor ?? string.Empty));
+        using var cursor = new UplinkInterop.MarshalledUtf8String(opts.Cursor);
         var nativeOpts = new UplinkInterop.UplinkListBucketsOptions
         {
-            cursor = opts.Cursor != null
-                ? Marshal.StringToCoTaskMemUTF8(opts.Cursor)
-                : nint.Zero
+            cursor = cursor.Handle
         };
 
         nint iterator = UplinkInterop.uplink_list_buckets(projectHandle, &nativeOpts);
-
-        if (nativeOpts.cursor != nint.Zero)
-            Marshal.FreeCoTaskMem(nativeOpts.cursor);
 
         var list = new BucketList();
         try

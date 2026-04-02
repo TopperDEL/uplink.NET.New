@@ -44,9 +44,9 @@ public class DownloadOperation : IDisposable
         DownloadOptions options)
     {
         _access = access;
-        _bucketName    = bucketName;
-        ObjectName     = objectName;
-        _options       = options;
+        _bucketName = bucketName;
+        ObjectName = objectName;
+        _options = options;
     }
 
     public Task? StartDownloadAsync()
@@ -74,76 +74,76 @@ public class DownloadOperation : IDisposable
 
     private async Task PerformDownloadAsync()
     {
-        Running       = true;
+        Running = true;
         BytesReceived = 0;
 
-        // Open download outside unsafe/async boundary
         var (downloadHandle, beginError) = BeginNativeDownload();
-        if (beginError != null)
+        if (beginError != null || downloadHandle is null)
         {
-            SetFailed(beginError);
+            SetFailed(beginError ?? "Failed to begin download.");
             return;
         }
 
-        // Determine total bytes
-        TotalBytes = GetTotalBytes(downloadHandle);
-
-        try
+        using (downloadHandle)
         {
-            using var ms = new System.IO.MemoryStream();
-            var chunkBuf = new byte[ChunkSize];
+            TotalBytes = GetTotalBytes(downloadHandle);
 
-            while (!_cancelRequested)
+            try
             {
-                var (bytesRead, eof, readError) = ReadChunk(downloadHandle, chunkBuf);
+                using var ms = new MemoryStream();
+                var chunkBuf = new byte[ChunkSize];
 
-                if (bytesRead > 0)
+                while (!_cancelRequested)
                 {
-                    ms.Write(chunkBuf, 0, (int)bytesRead);
-                    BytesReceived += bytesRead;
-                    DownloadOperationProgressChanged?.Invoke(this);
-                    await Task.Yield();
+                    var (bytesRead, eof, readError) = ReadChunk(downloadHandle, chunkBuf);
+
+                    if (bytesRead > 0)
+                    {
+                        ms.Write(chunkBuf, 0, (int)bytesRead);
+                        BytesReceived += bytesRead;
+                        DownloadOperationProgressChanged?.Invoke(this);
+                        await Task.Yield();
+                    }
+
+                    if (readError != null)
+                    {
+                        SetFailed(readError);
+                        return;
+                    }
+
+                    if (eof || bytesRead == 0)
+                        break;
                 }
 
-                if (readError != null)
+                if (_cancelRequested)
                 {
-                    SetFailed(readError);
+                    Cancelled = true;
+                    Running = false;
+                    DownloadOperationEnded?.Invoke(this);
                     return;
                 }
 
-                if (eof || bytesRead == 0)
-                    break;
-            }
-
-            if (_cancelRequested)
-            {
-                Cancelled = true;
-                Running   = false;
+                DownloadedBytes = ms.ToArray();
+                Completed = true;
+                Running = false;
                 DownloadOperationEnded?.Invoke(this);
-                return;
             }
-
-            DownloadedBytes = ms.ToArray();
-            Completed = true;
-            Running   = false;
-            DownloadOperationEnded?.Invoke(this);
-        }
-        catch (Exception ex)
-        {
-            SetFailed(ex.Message);
-        }
-        finally
-        {
-            UplinkInterop.FreeDownloadHandle(downloadHandle);
-            lock (_startSync)
+            catch (Exception ex)
             {
-                _projectLease?.Dispose();
-                _projectLease = null;
+                SetFailed(ex.Message);
+            }
+            finally
+            {
+                lock (_startSync)
+                {
+                    _projectLease?.Dispose();
+                    _projectLease = null;
+                }
             }
         }
     }
 
-    private unsafe (nint handle, string? error) BeginNativeDownload()
+    private unsafe (UplinkDownloadSafeHandle? handle, string? error) BeginNativeDownload()
     {
         using var trace = _access.Trace("uplink_download_object", ("bucket", _bucketName), ("key", ObjectName));
         var opts = new UplinkInterop.UplinkDownloadOptions
@@ -152,30 +152,39 @@ public class DownloadOperation : IDisposable
             length = _options.Length
         };
         var result = UplinkInterop.uplink_download_object(
-            _projectLease!.Handle, _bucketName, ObjectName, &opts);
+            _projectLease!.Handle.DangerousHandle,
+            _bucketName,
+            ObjectName,
+            &opts);
         if (result.error != nint.Zero)
         {
             var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
             trace?.NativeError(msg, code);
             UplinkInterop.uplink_free_download_result(result);
-            return (nint.Zero, msg);
+            return (null, msg);
         }
 
         if (result.download == nint.Zero)
         {
             trace?.Fail("Native library returned a null download handle without an error.");
             UplinkInterop.uplink_free_download_result(result);
-            return (nint.Zero, "Native library returned a null download handle without an error.");
+            return (null, "Native library returned a null download handle without an error.");
         }
 
-        trace?.Success();
-        return (result.download, null);
+        var downloadHandle = new UplinkDownloadSafeHandle(result.download);
+        result.download = nint.Zero;
+        trace?.Success($"downloadHandle={downloadHandle.DangerousHandle}");
+        return (downloadHandle, null);
     }
 
-    private long GetTotalBytes(nint handle)
+    private long GetTotalBytes(UplinkDownloadSafeHandle handle)
     {
-        using var trace = _access.Trace("uplink_download_info", ("bucket", _bucketName), ("key", ObjectName));
-        var infoResult = UplinkInterop.uplink_download_info(handle);
+        using var trace = _access.Trace(
+            "uplink_download_info",
+            ("bucket", _bucketName),
+            ("key", ObjectName),
+            ("downloadHandle", handle.DangerousHandle));
+        var infoResult = UplinkInterop.uplink_download_info(handle.DangerousHandle);
         long total = 0;
         if (infoResult.error == nint.Zero && infoResult.object_ != nint.Zero)
         {
@@ -197,23 +206,31 @@ public class DownloadOperation : IDisposable
     }
 
     private unsafe (uint bytesRead, bool eof, string? error) ReadChunk(
-        nint handle, byte[] buffer)
+        UplinkDownloadSafeHandle handle,
+        byte[] buffer)
     {
-        using var trace = _access.Trace("uplink_download_read", ("bucket", _bucketName), ("key", ObjectName), ("bufferLength", buffer.Length));
+        using var trace = _access.Trace(
+            "uplink_download_read",
+            ("bucket", _bucketName),
+            ("key", ObjectName),
+            ("downloadHandle", handle.DangerousHandle),
+            ("bufferLength", buffer.Length));
         UplinkInterop.UplinkReadResult readResult;
         fixed (byte* bufPtr = buffer)
         {
             readResult = UplinkInterop.uplink_download_read(
-                handle, bufPtr, (nuint)buffer.Length);
+                handle.DangerousHandle,
+                bufPtr,
+                (nuint)buffer.Length);
         }
 
         try
         {
-            uint bytesRead = (uint)(nuint)readResult.bytes_read;
+            var bytesRead = (uint)(nuint)readResult.bytes_read;
             if (readResult.error != nint.Zero)
             {
                 var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref readResult.error);
-                bool isEof = code == UplinkInterop.EndOfFileErrorCode
+                var isEof = code == UplinkInterop.EndOfFileErrorCode
                     || msg.Contains("EOF", StringComparison.OrdinalIgnoreCase);
                 if (isEof)
                     trace?.Success("Reached EOF.");
@@ -230,10 +247,11 @@ public class DownloadOperation : IDisposable
             UplinkInterop.uplink_free_read_result(readResult);
         }
     }
+
     private void SetFailed(string message)
     {
-        Failed       = true;
-        Running      = false;
+        Failed = true;
+        Running = false;
         ErrorMessage = message;
         DownloadOperationEnded?.Invoke(this);
     }

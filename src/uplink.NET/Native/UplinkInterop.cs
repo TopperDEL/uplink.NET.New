@@ -669,4 +669,122 @@ internal static unsafe partial class UplinkInterop
             handle.Free();
         }
     }
+
+    internal sealed class MarshalledUtf8String : IDisposable
+    {
+        internal MarshalledUtf8String(string? value)
+        {
+            Handle = string.IsNullOrEmpty(value)
+                ? nint.Zero
+                : Marshal.StringToCoTaskMemUTF8(value);
+        }
+
+        internal nint Handle { get; }
+
+        public void Dispose()
+        {
+            if (Handle != nint.Zero)
+                Marshal.FreeCoTaskMem(Handle);
+        }
+    }
+
+    internal sealed class MarshalledCustomMetadata : IDisposable
+    {
+        private readonly UplinkCustomMetadataEntry[] _entries;
+        private readonly GCHandle _entriesPin;
+
+        internal MarshalledCustomMetadata(Models.CustomMetadata? metadata)
+        {
+            if (metadata?.Entries.Count > 0)
+            {
+                _entries = metadata.Entries
+                    .Select(kv => new UplinkCustomMetadataEntry
+                    {
+                        key = Marshal.StringToCoTaskMemUTF8(kv.Key),
+                        key_length = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Key),
+                        value = Marshal.StringToCoTaskMemUTF8(kv.Value),
+                        value_length = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Value)
+                    })
+                    .ToArray();
+
+                _entriesPin = GCHandle.Alloc(_entries, GCHandleType.Pinned);
+            }
+            else
+            {
+                _entries = Array.Empty<UplinkCustomMetadataEntry>();
+            }
+        }
+
+        internal UplinkCustomMetadata NativeValue => new()
+        {
+            entries = _entriesPin.IsAllocated ? _entriesPin.AddrOfPinnedObject() : nint.Zero,
+            count = (nuint)_entries.Length
+        };
+
+        public void Dispose()
+        {
+            if (_entriesPin.IsAllocated)
+                _entriesPin.Free();
+
+            foreach (var entry in _entries)
+            {
+                if (entry.key != nint.Zero)
+                    Marshal.FreeCoTaskMem(entry.key);
+
+                if (entry.value != nint.Zero)
+                    Marshal.FreeCoTaskMem(entry.value);
+            }
+        }
+    }
+
+    internal sealed class MarshalledSharePrefixes : IDisposable
+    {
+        private readonly UplinkSharePrefix[] _prefixes;
+        private readonly GCHandle _prefixesPin;
+
+        internal MarshalledSharePrefixes(IEnumerable<Models.SharePrefix> prefixes)
+        {
+            ArgumentNullException.ThrowIfNull(prefixes);
+
+            _prefixes = prefixes
+                .Select(prefix => prefix ?? throw new ArgumentException("Share prefixes must not contain null values.", nameof(prefixes)))
+                .Select(prefix =>
+                {
+                    if (string.IsNullOrWhiteSpace(prefix.Bucket))
+                        throw new ArgumentException("Share prefix bucket must not be null or whitespace.", nameof(prefixes));
+
+                    return new UplinkSharePrefix
+                    {
+                        bucket = Marshal.StringToCoTaskMemUTF8(prefix.Bucket),
+                        prefix = Marshal.StringToCoTaskMemUTF8(prefix.Prefix ?? string.Empty)
+                    };
+                })
+                .ToArray();
+
+            if (_prefixes.Length > 0)
+                _prefixesPin = GCHandle.Alloc(_prefixes, GCHandleType.Pinned);
+        }
+
+        internal UplinkSharePrefix* Pointer
+            => _prefixesPin.IsAllocated
+                ? (UplinkSharePrefix*)_prefixesPin.AddrOfPinnedObject()
+                : null;
+
+        internal nint Count => checked((nint)_prefixes.Length);
+
+        public void Dispose()
+        {
+            if (_prefixesPin.IsAllocated)
+                _prefixesPin.Free();
+
+            foreach (var prefix in _prefixes)
+            {
+                if (prefix.bucket != nint.Zero)
+                    Marshal.FreeCoTaskMem(prefix.bucket);
+
+                if (prefix.prefix != nint.Zero)
+                    Marshal.FreeCoTaskMem(prefix.prefix);
+            }
+        }
+    }
 }

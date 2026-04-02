@@ -9,7 +9,7 @@ namespace uplink.NET.Models;
 public class ChunkedUploadOperation : IDisposable
 {
     private readonly Access _access;
-    private nint _uploadHandle;
+    private UplinkUploadSafeHandle? _uploadHandle;
     private Access.ProjectHandleLease? _projectLease;
     private bool _committed;
     private bool _disposed;
@@ -18,12 +18,13 @@ public class ChunkedUploadOperation : IDisposable
     public bool Failed { get; private set; }
     public string? ErrorMessage { get; private set; }
 
-    internal ChunkedUploadOperation(nint uploadHandle, string objectName, Access.ProjectHandleLease projectLease, Access access)
+    internal ChunkedUploadOperation(UplinkUploadSafeHandle uploadHandle, string objectName, Access.ProjectHandleLease projectLease, Access access)
     {
+        ArgumentNullException.ThrowIfNull(uploadHandle);
         ArgumentNullException.ThrowIfNull(projectLease);
         _access = access ?? throw new ArgumentNullException(nameof(access));
         _uploadHandle = uploadHandle;
-        ObjectName    = objectName;
+        ObjectName = objectName;
         _projectLease = projectLease;
     }
 
@@ -33,21 +34,31 @@ public class ChunkedUploadOperation : IDisposable
         if (chunk is null || chunk.Length == 0)
             return true;
 
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
+
         await Task.Yield();
 
+        var handle = _uploadHandle ?? throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
         unsafe
         {
-            using var trace = _access.Trace("uplink_upload_write", ("key", ObjectName), ("count", chunk.Length));
+            using var trace = _access.Trace(
+                "uplink_upload_write",
+                ("key", ObjectName),
+                ("uploadHandle", handle.DangerousHandle),
+                ("count", chunk.Length));
             var writeResult = UplinkInterop.WithPinnedBuffer(
-                chunk, 0, chunk.Length,
-                (ptr, len) => UplinkInterop.uplink_upload_write(_uploadHandle, (void*)ptr, len));
+                chunk,
+                0,
+                chunk.Length,
+                (ptr, len) => UplinkInterop.uplink_upload_write(handle.DangerousHandle, (void*)ptr, len));
             try
             {
                 if (writeResult.error != nint.Zero)
                 {
                     var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
                     trace?.NativeError(msg, code);
-                    Failed       = true;
+                    Failed = true;
                     ErrorMessage = msg;
                     return false;
                 }
@@ -66,18 +77,25 @@ public class ChunkedUploadOperation : IDisposable
     /// <summary>Commits the upload, finalizing the object on Storj.</summary>
     public async Task<bool> CommitAsync()
     {
-        if (_committed) return true;
+        if (_committed)
+            return true;
+
         if (_disposed)
             throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
+
         await Task.Yield();
 
-        using var trace = _access.Trace("uplink_upload_commit", ("key", ObjectName));
-        var errPtr = UplinkInterop.uplink_upload_commit(_uploadHandle);
+        var handle = _uploadHandle ?? throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
+        using var trace = _access.Trace(
+            "uplink_upload_commit",
+            ("key", ObjectName),
+            ("uploadHandle", handle.DangerousHandle));
+        var errPtr = UplinkInterop.uplink_upload_commit(handle.DangerousHandle);
         if (errPtr != nint.Zero)
         {
             var (msg, code) = UplinkInterop.ConsumeError(errPtr);
             trace?.NativeError(msg, code);
-            Failed       = true;
+            Failed = true;
             ErrorMessage = msg;
             return false;
         }
@@ -93,14 +111,20 @@ public class ChunkedUploadOperation : IDisposable
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
+
         await Task.Yield();
-        using var trace = _access.Trace("uplink_upload_abort", ("key", ObjectName));
-        var errPtr = UplinkInterop.uplink_upload_abort(_uploadHandle);
+
+        var handle = _uploadHandle ?? throw new ObjectDisposedException(nameof(ChunkedUploadOperation));
+        using var trace = _access.Trace(
+            "uplink_upload_abort",
+            ("key", ObjectName),
+            ("uploadHandle", handle.DangerousHandle));
+        var errPtr = UplinkInterop.uplink_upload_abort(handle.DangerousHandle);
         if (errPtr != nint.Zero)
         {
             var (msg, code) = UplinkInterop.ConsumeError(errPtr);
             trace?.NativeError(msg, code);
-            Failed       = true;
+            Failed = true;
             ErrorMessage = msg;
             return false;
         }
@@ -112,30 +136,33 @@ public class ChunkedUploadOperation : IDisposable
 
     protected virtual void Dispose(bool disposing)
     {
-        if (_disposed) return;
+        if (_disposed)
+            return;
+
         _disposed = true;
 
-        if (_uploadHandle != nint.Zero)
+        var handle = _uploadHandle;
+        if (handle != null && !handle.IsClosed && !handle.IsInvalid && !_committed)
         {
-            if (!_committed)
+            using var trace = _access.Trace(
+                "uplink_upload_abort",
+                ("key", ObjectName),
+                ("uploadHandle", handle.DangerousHandle));
+            var errPtr = UplinkInterop.uplink_upload_abort(handle.DangerousHandle);
+            if (errPtr != nint.Zero)
             {
-                using var trace = _access.Trace("uplink_upload_abort", ("key", ObjectName));
-                var errPtr = UplinkInterop.uplink_upload_abort(_uploadHandle);
-                if (errPtr != nint.Zero)
-                {
-                    var (msg, code) = UplinkInterop.ConsumeError(errPtr);
-                    trace?.NativeError(msg, code);
-                    Failed       = true;
-                    ErrorMessage = msg;
-                }
-                else
-                {
-                    trace?.Success();
-                }
+                var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+                trace?.NativeError(msg, code);
+                Failed = true;
+                ErrorMessage = msg;
             }
-
-            ReleaseHandle();
+            else
+            {
+                trace?.Success();
+            }
         }
+
+        ReleaseHandle();
     }
 
     public void Dispose()
@@ -146,11 +173,8 @@ public class ChunkedUploadOperation : IDisposable
 
     private void ReleaseHandle()
     {
-        if (_uploadHandle == nint.Zero)
-            return;
-
-        UplinkInterop.FreeUploadHandle(_uploadHandle);
-        _uploadHandle = nint.Zero;
+        _uploadHandle?.Dispose();
+        _uploadHandle = null;
         _projectLease?.Dispose();
         _projectLease = null;
     }

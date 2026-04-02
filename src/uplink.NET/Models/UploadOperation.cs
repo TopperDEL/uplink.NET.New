@@ -50,12 +50,12 @@ public class UploadOperation : IDisposable
         UplinkOptions nativeOptions,
         CustomMetadata? customMetadata)
     {
-        _access         = access;
-        _bucketName     = bucketName;
-        ObjectName      = objectName;
-        _data           = data;
-        TotalBytes      = data.Length;
-        _nativeOptions  = nativeOptions;
+        _access = access;
+        _bucketName = bucketName;
+        ObjectName = objectName;
+        _data = data;
+        TotalBytes = data.Length;
+        _nativeOptions = nativeOptions;
         _customMetadata = customMetadata;
     }
 
@@ -87,108 +87,128 @@ public class UploadOperation : IDisposable
         Running = true;
         BytesSent = 0;
 
-        // Begin upload outside async/unsafe boundary
         var (uploadHandle, beginError) = BeginNativeUpload();
-        if (beginError != null)
+        if (beginError != null || uploadHandle is null)
         {
-            SetFailed(beginError);
+            SetFailed(beginError ?? "Failed to begin upload.");
             return;
         }
 
-        try
+        using (uploadHandle)
         {
-            // Write in chunks; each WriteChunk call is sync/unsafe but await is safe here
-            int offset = 0;
-            while (offset < _data.Length && !_cancelRequested)
+            try
             {
-                int toWrite = Math.Min(ChunkSize, _data.Length - offset);
-                var (written, writeError) = WriteChunk(uploadHandle, offset, toWrite);
-                if (writeError != null)
+                var offset = 0;
+                while (offset < _data.Length && !_cancelRequested)
+                {
+                    var toWrite = Math.Min(ChunkSize, _data.Length - offset);
+                    var (written, writeError) = WriteChunk(uploadHandle, offset, toWrite);
+                    if (writeError != null)
+                    {
+                        AbortNativeUpload(uploadHandle);
+                        SetFailed(writeError);
+                        return;
+                    }
+
+                    offset += (int)written;
+                    BytesSent = offset;
+                    UploadOperationProgressChanged?.Invoke(this);
+                    await Task.Yield();
+                }
+
+                if (_cancelRequested)
                 {
                     AbortNativeUpload(uploadHandle);
-                    SetFailed(writeError);
+                    Cancelled = true;
+                    Running = false;
+                    UploadOperationEnded?.Invoke(this);
                     return;
                 }
-                offset   += (int)written;
-                BytesSent = offset;
-                UploadOperationProgressChanged?.Invoke(this);
-                await Task.Yield();
-            }
 
-            if (_cancelRequested)
+                if (_customMetadata?.Entries.Count > 0)
+                {
+                    using var metadataTrace = _access.Trace(
+                        "uplink_upload_set_custom_metadata",
+                        ("bucket", _bucketName),
+                        ("key", ObjectName),
+                        ("uploadHandle", uploadHandle.DangerousHandle));
+                    SetCustomMetadataNative(uploadHandle, _customMetadata, metadataTrace);
+                }
+
+                var commitError = CommitNativeUpload(uploadHandle);
+                if (commitError != null)
+                {
+                    SetFailed(commitError);
+                    return;
+                }
+
+                Completed = true;
+                Running = false;
+                UploadOperationEnded?.Invoke(this);
+            }
+            catch (Exception ex)
             {
                 AbortNativeUpload(uploadHandle);
-                Cancelled = true;
-                Running   = false;
-                UploadOperationEnded?.Invoke(this);
-                return;
+                SetFailed(ex.Message);
             }
-
-            if (_customMetadata?.Entries.Count > 0)
+            finally
             {
-                using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", _bucketName), ("key", ObjectName));
-                SetCustomMetadataNative(uploadHandle, _customMetadata, metadataTrace);
-            }
-
-            string? commitError = CommitNativeUpload(uploadHandle);
-            if (commitError != null)
-            {
-                SetFailed(commitError);
-                return;
-            }
-
-            Completed = true;
-            Running   = false;
-            UploadOperationEnded?.Invoke(this);
-        }
-        catch (Exception ex)
-        {
-            AbortNativeUpload(uploadHandle);
-            SetFailed(ex.Message);
-        }
-        finally
-        {
-            UplinkInterop.FreeUploadHandle(uploadHandle);
-            lock (_startSync)
-            {
-                _projectLease?.Dispose();
-                _projectLease = null;
+                lock (_startSync)
+                {
+                    _projectLease?.Dispose();
+                    _projectLease = null;
+                }
             }
         }
     }
 
-    private unsafe (nint handle, string? error) BeginNativeUpload()
+    private unsafe (UplinkUploadSafeHandle? handle, string? error) BeginNativeUpload()
     {
         using var trace = _access.Trace("uplink_upload_object", ("bucket", _bucketName), ("key", ObjectName));
         var opts = new UplinkInterop.UplinkUploadOptions { expires = _nativeOptions.Expires };
         var result = UplinkInterop.uplink_upload_object(
-            _projectLease!.Handle, _bucketName, ObjectName, &opts);
+            _projectLease!.Handle.DangerousHandle,
+            _bucketName,
+            ObjectName,
+            &opts);
         if (result.error != nint.Zero)
         {
             var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
             trace?.NativeError(msg, code);
             UplinkInterop.uplink_free_upload_result(result);
-            return (nint.Zero, msg);
+            return (null, msg);
         }
 
         if (result.upload == nint.Zero)
         {
             trace?.Fail("Native library returned a null upload handle without an error.");
             UplinkInterop.uplink_free_upload_result(result);
-            return (nint.Zero, "Native library returned a null upload handle without an error.");
+            return (null, "Native library returned a null upload handle without an error.");
         }
 
-        trace?.Success();
-        return (result.upload, null);
+        var uploadHandle = new UplinkUploadSafeHandle(result.upload);
+        result.upload = nint.Zero;
+        trace?.Success($"uploadHandle={uploadHandle.DangerousHandle}");
+        return (uploadHandle, null);
     }
 
     private unsafe (uint written, string? error) WriteChunk(
-        nint handle, int offset, int count)
+        UplinkUploadSafeHandle handle,
+        int offset,
+        int count)
     {
-        using var trace = _access.Trace("uplink_upload_write", ("bucket", _bucketName), ("key", ObjectName), ("offset", offset), ("count", count));
+        using var trace = _access.Trace(
+            "uplink_upload_write",
+            ("bucket", _bucketName),
+            ("key", ObjectName),
+            ("uploadHandle", handle.DangerousHandle),
+            ("offset", offset),
+            ("count", count));
         var writeResult = UplinkInterop.WithPinnedBuffer(
-            _data, offset, count,
-            (ptr, len) => UplinkInterop.uplink_upload_write(handle, (void*)ptr, len));
+            _data,
+            offset,
+            count,
+            (ptr, len) => UplinkInterop.uplink_upload_write(handle.DangerousHandle, (void*)ptr, len));
         try
         {
             if (writeResult.error != nint.Zero)
@@ -207,16 +227,21 @@ public class UploadOperation : IDisposable
         }
     }
 
-    private static void AbortNativeUpload(nint handle)
+    private static void AbortNativeUpload(UplinkUploadSafeHandle handle)
     {
-        var errPtr = UplinkInterop.uplink_upload_abort(handle);
-        if (errPtr != nint.Zero) UplinkInterop.uplink_free_error(errPtr);
+        var errPtr = UplinkInterop.uplink_upload_abort(handle.DangerousHandle);
+        if (errPtr != nint.Zero)
+            UplinkInterop.uplink_free_error(errPtr);
     }
 
-    private string? CommitNativeUpload(nint handle)
+    private string? CommitNativeUpload(UplinkUploadSafeHandle handle)
     {
-        using var trace = _access.Trace("uplink_upload_commit", ("bucket", _bucketName), ("key", ObjectName));
-        var errPtr = UplinkInterop.uplink_upload_commit(handle);
+        using var trace = _access.Trace(
+            "uplink_upload_commit",
+            ("bucket", _bucketName),
+            ("key", ObjectName),
+            ("uploadHandle", handle.DangerousHandle));
+        var errPtr = UplinkInterop.uplink_upload_commit(handle.DangerousHandle);
         if (errPtr != nint.Zero)
         {
             var (msg, code) = UplinkInterop.ConsumeError(errPtr);
@@ -228,39 +253,18 @@ public class UploadOperation : IDisposable
         return null;
     }
 
-    private static unsafe void SetCustomMetadataNative(
-        nint uploadHandle, CustomMetadata metadata, NativeCallTrace? trace)
+    private static void SetCustomMetadataNative(
+        UplinkUploadSafeHandle uploadHandle,
+        CustomMetadata metadata,
+        NativeCallTrace? trace)
     {
-        var entries = metadata.Entries
-            .Select(kv => new UplinkInterop.UplinkCustomMetadataEntry
-            {
-                key          = System.Runtime.InteropServices.Marshal.StringToCoTaskMemUTF8(kv.Key),
-                key_length   = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Key),
-                value        = System.Runtime.InteropServices.Marshal.StringToCoTaskMemUTF8(kv.Value),
-                value_length = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Value)
-            })
-            .ToArray();
-
-        fixed (UplinkInterop.UplinkCustomMetadataEntry* entriesPtr = entries)
+        using var nativeMetadata = new UplinkInterop.MarshalledCustomMetadata(metadata);
+        var errPtr = UplinkInterop.uplink_upload_set_custom_metadata(uploadHandle.DangerousHandle, nativeMetadata.NativeValue);
+        if (errPtr != nint.Zero)
         {
-            var nativeMeta = new UplinkInterop.UplinkCustomMetadata
-            {
-                entries = (nint)entriesPtr,
-                count   = (nuint)entries.Length
-            };
-            var errPtr = UplinkInterop.uplink_upload_set_custom_metadata(uploadHandle, nativeMeta);
-            if (errPtr != nint.Zero)
-            {
-                var (msg, code) = UplinkInterop.ConsumeError(errPtr);
-                trace?.NativeError(msg, code);
-                throw new IOException($"Failed to set custom metadata: {msg}");
-            }
-        }
-
-        foreach (var e in entries)
-        {
-            System.Runtime.InteropServices.Marshal.FreeCoTaskMem(e.key);
-            System.Runtime.InteropServices.Marshal.FreeCoTaskMem(e.value);
+            var (msg, code) = UplinkInterop.ConsumeError(errPtr);
+            trace?.NativeError(msg, code);
+            throw new IOException($"Failed to set custom metadata: {msg}");
         }
 
         trace?.Success();
@@ -268,8 +272,8 @@ public class UploadOperation : IDisposable
 
     private void SetFailed(string message)
     {
-        Failed       = true;
-        Running      = false;
+        Failed = true;
+        Running = false;
         ErrorMessage = message;
         UploadOperationEnded?.Invoke(this);
     }

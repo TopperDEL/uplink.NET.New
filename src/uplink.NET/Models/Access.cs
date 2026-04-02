@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 using uplink.NET.Diagnostics;
 using uplink.NET.Exceptions;
 using uplink.NET.Native;
@@ -12,12 +13,17 @@ namespace uplink.NET.Models;
 /// </summary>
 public class Access : IDisposable
 {
-    internal nint _accessHandle;
-    internal nint _projectHandle;
+    private static long _nextAccessId;
+
+    internal UplinkAccessSafeHandle? _accessHandle;
+    internal UplinkProjectSafeHandle? _projectHandle;
 
     private readonly Config? _config;
     private readonly UplinkDiagnosticsSession? _diagnostics;
+    private readonly SemaphoreSlim _nativeOperationGate = new(1, 1);
     private readonly object _lifetimeSync = new();
+    private readonly long _accessId = Interlocked.Increment(ref _nextAccessId);
+    private long _nextOperationId;
     private int _activeProjectLeases;
     private bool _disposeRequested;
     private bool _disposed;
@@ -51,18 +57,18 @@ public class Access : IDisposable
                 throw new AccessException("Failed to parse access grant: native library returned a null access handle.");
             }
 
-            _accessHandle = accessResult.access;
+            _accessHandle = new UplinkAccessSafeHandle(accessResult.access);
             accessResult.access = nint.Zero;
 
             try
             {
-                _projectHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
+                _projectHandle = OpenProjectHandle(_accessHandle.DangerousHandle, _config, _diagnostics);
                 trace?.Success();
             }
             catch
             {
-                UplinkInterop.FreeAccessHandle(_accessHandle);
-                _accessHandle = nint.Zero;
+                _accessHandle.Dispose();
+                _accessHandle = null;
                 throw;
             }
         }
@@ -79,18 +85,18 @@ public class Access : IDisposable
 
         _config = CloneConfig(config);
         _diagnostics = CreateDiagnosticsSession(_config);
-        _accessHandle = accessHandle;
+        _accessHandle = new UplinkAccessSafeHandle(accessHandle);
 
         using var trace = Trace("uplink_config_open_project");
         try
         {
-            _projectHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
+            _projectHandle = OpenProjectHandle(_accessHandle.DangerousHandle, _config, _diagnostics);
             trace?.Success();
         }
         catch
         {
-            UplinkInterop.FreeAccessHandle(_accessHandle);
-            _accessHandle = nint.Zero;
+            _accessHandle.Dispose();
+            _accessHandle = null;
             throw;
         }
     }
@@ -101,7 +107,7 @@ public class Access : IDisposable
         ThrowIfDisposed();
 
         using var trace = Trace("uplink_access_serialize");
-        var result = UplinkInterop.uplink_access_serialize(_accessHandle);
+        var result = UplinkInterop.uplink_access_serialize(GetAccessHandle());
         try
         {
             if (result.error != nint.Zero)
@@ -138,22 +144,6 @@ public class Access : IDisposable
         ArgumentNullException.ThrowIfNull(permission);
         ArgumentNullException.ThrowIfNull(prefixes);
 
-        var sharePrefixes = prefixes.ToArray();
-        var nativePrefixes = new UplinkInterop.UplinkSharePrefix[sharePrefixes.Length];
-
-        for (var index = 0; index < sharePrefixes.Length; index++)
-        {
-            var sharePrefix = sharePrefixes[index] ?? throw new ArgumentException("Share prefixes must not contain null values.", nameof(prefixes));
-            if (string.IsNullOrWhiteSpace(sharePrefix.Bucket))
-                throw new ArgumentException("Share prefix bucket must not be null or whitespace.", nameof(prefixes));
-
-            nativePrefixes[index] = new UplinkInterop.UplinkSharePrefix
-            {
-                bucket = Marshal.StringToCoTaskMemUTF8(sharePrefix.Bucket),
-                prefix = Marshal.StringToCoTaskMemUTF8(sharePrefix.Prefix ?? string.Empty)
-            };
-        }
-
         var nativePermission = new UplinkInterop.UplinkPermission
         {
             allow_download = permission.AllowDownload ? (byte)1 : (byte)0,
@@ -164,54 +154,37 @@ public class Access : IDisposable
             not_after = UplinkInterop.DateTimeToUnix(permission.NotAfter)
         };
 
-        using var trace = Trace("uplink_access_share", ("prefixCount", sharePrefixes.Length));
-        UplinkInterop.UplinkAccessResult result;
+        using var nativePrefixes = new UplinkInterop.MarshalledSharePrefixes(prefixes);
+        using var trace = Trace("uplink_access_share", ("prefixCount", nativePrefixes.Count));
+        var result = UplinkInterop.uplink_access_share(
+            GetAccessHandle(),
+            nativePermission,
+            nativePrefixes.Pointer,
+            nativePrefixes.Count);
+
         try
         {
-            if (nativePrefixes.Length == 0)
+            if (result.error != nint.Zero)
             {
-                result = UplinkInterop.uplink_access_share(_accessHandle, nativePermission, null, 0);
-            }
-            else
-            {
-                fixed (UplinkInterop.UplinkSharePrefix* prefixesPtr = nativePrefixes)
-                    result = UplinkInterop.uplink_access_share(_accessHandle, nativePermission, prefixesPtr, checked((nint)nativePrefixes.Length));
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                trace?.NativeError(msg, code);
+                throw new AccessException($"Failed to share access grant: {msg}");
             }
 
-            try
+            if (result.access == nint.Zero)
             {
-                if (result.error != nint.Zero)
-                {
-                    var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                    trace?.NativeError(msg, code);
-                    throw new AccessException($"Failed to share access grant: {msg}");
-                }
-
-                if (result.access == nint.Zero)
-                {
-                    trace?.Fail("Native library returned a null shared access handle without an error.");
-                    throw new AccessException("Failed to share access grant: native library returned a null access handle.");
-                }
-
-                var sharedAccessHandle = result.access;
-                result.access = nint.Zero;
-                trace?.Success();
-                return new Access(sharedAccessHandle, _config);
+                trace?.Fail("Native library returned a null shared access handle without an error.");
+                throw new AccessException("Failed to share access grant: native library returned a null access handle.");
             }
-            finally
-            {
-                UplinkInterop.uplink_free_access_result(result);
-            }
+
+            var sharedAccessHandle = result.access;
+            result.access = nint.Zero;
+            trace?.Success();
+            return new Access(sharedAccessHandle, _config);
         }
         finally
         {
-            foreach (var nativePrefix in nativePrefixes)
-            {
-                if (nativePrefix.bucket != nint.Zero)
-                    Marshal.FreeCoTaskMem(nativePrefix.bucket);
-                if (nativePrefix.prefix != nint.Zero)
-                    Marshal.FreeCoTaskMem(nativePrefix.prefix);
-            }
+            UplinkInterop.uplink_free_access_result(result);
         }
     }
 
@@ -229,7 +202,7 @@ public class Access : IDisposable
             using var trace = Trace("uplink_revoke_access");
             try
             {
-                var errPtr = UplinkInterop.uplink_revoke_access(projectLease.Handle, childAccess._accessHandle);
+                var errPtr = UplinkInterop.uplink_revoke_access(projectLease.Handle.DangerousHandle, childAccess.GetAccessHandle());
                 if (errPtr != nint.Zero)
                 {
                     var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
@@ -295,7 +268,8 @@ public class Access : IDisposable
             DialTimeoutMilliseconds = config.DialTimeoutMilliseconds,
             TempDirectory = config.TempDirectory,
             EnableDiagnostics = config.EnableDiagnostics,
-            DiagnosticsLogFilePath = config.DiagnosticsLogFilePath
+            DiagnosticsLogFilePath = config.DiagnosticsLogFilePath,
+            SerializeNativeOperations = config.SerializeNativeOperations
         };
     }
 
@@ -311,7 +285,7 @@ public class Access : IDisposable
         }
     }
 
-    private static nint OpenProjectHandle(nint accessHandle, Config? config, UplinkDiagnosticsSession? diagnostics)
+    private static UplinkProjectSafeHandle OpenProjectHandle(nint accessHandle, Config? config, UplinkDiagnosticsSession? diagnostics)
     {
         using var trace = diagnostics?.Trace(
             "uplink_config_open_project",
@@ -344,7 +318,7 @@ public class Access : IDisposable
             throw new AccessException("Failed to open project: native library returned a null project handle.");
         }
 
-        var projectHandle = projectResult.project;
+        var projectHandle = new UplinkProjectSafeHandle(projectResult.project);
         projectResult.project = nint.Zero;
         UplinkInterop.uplink_free_project_result(projectResult);
         trace?.Success();
@@ -354,7 +328,16 @@ public class Access : IDisposable
     public string? DiagnosticsLogFilePath => _diagnostics?.LogFilePath;
 
     internal UplinkDiagnosticsSession.NativeCallTrace? Trace(string operation, params (string Key, object? Value)[] context)
-        => _diagnostics?.Trace(operation, context);
+    {
+        if (_diagnostics == null)
+            return null;
+
+        var mergedContext = new (string Key, object? Value)[context.Length + 2];
+        mergedContext[0] = ("accessId", _accessId);
+        mergedContext[1] = ("operationId", Interlocked.Increment(ref _nextOperationId));
+        Array.Copy(context, 0, mergedContext, 2, context.Length);
+        return _diagnostics.Trace(operation, mergedContext);
+    }
 
     private void ThrowIfDisposed()
     {
@@ -380,27 +363,36 @@ public class Access : IDisposable
 
     internal ProjectHandleLease AcquireProjectLease()
     {
+        var serializeNativeOperations = _config?.SerializeNativeOperations ?? false;
+        if (serializeNativeOperations)
+            _nativeOperationGate.Wait();
+
         lock (_lifetimeSync)
         {
-            ThrowIfDisposedNoLock();
+            try
+            {
+                ThrowIfDisposedNoLock();
+                var leaseHandle = OpenProjectHandle(GetAccessHandleNoLock(), _config, _diagnostics);
+                _activeProjectLeases++;
+                return new ProjectHandleLease(this, leaseHandle, serializeNativeOperations ? _nativeOperationGate : null);
+            }
+            catch
+            {
+                if (serializeNativeOperations)
+                    _nativeOperationGate.Release();
 
-            if (_accessHandle == nint.Zero)
-                throw new ObjectDisposedException(nameof(Access));
-
-            var leaseHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
-            _activeProjectLeases++;
-            return new ProjectHandleLease(this, leaseHandle);
+                throw;
+            }
         }
     }
 
-    private void ReleaseProjectLease(nint projectHandle)
+    private void ReleaseProjectLease(UplinkProjectSafeHandle? projectHandle)
     {
         lock (_lifetimeSync)
         {
             try
             {
-                if (projectHandle != nint.Zero)
-                    UplinkInterop.FreeProjectHandle(projectHandle);
+                projectHandle?.Dispose();
             }
             finally
             {
@@ -418,17 +410,11 @@ public class Access : IDisposable
         if (_disposed)
             return;
 
-        if (_projectHandle != nint.Zero)
-        {
-            UplinkInterop.FreeProjectHandle(_projectHandle);
-            _projectHandle = nint.Zero;
-        }
+        _projectHandle?.Dispose();
+        _projectHandle = null;
 
-        if (_accessHandle != nint.Zero)
-        {
-            UplinkInterop.FreeAccessHandle(_accessHandle);
-            _accessHandle = nint.Zero;
-        }
+        _accessHandle?.Dispose();
+        _accessHandle = null;
 
         _disposed = true;
     }
@@ -442,27 +428,49 @@ public class Access : IDisposable
     public void Dispose()
     {
         Dispose(true);
-        GC.SuppressFinalize(this);
     }
 
-    ~Access() => Dispose(false);
+    private nint GetAccessHandle()
+    {
+        lock (_lifetimeSync)
+        {
+            return GetAccessHandleNoLock();
+        }
+    }
+
+    private nint GetAccessHandleNoLock()
+    {
+        if (_accessHandle is null || _accessHandle.IsClosed || _accessHandle.IsInvalid)
+            throw new ObjectDisposedException(nameof(Access));
+
+        return _accessHandle.DangerousHandle;
+    }
 
     internal sealed class ProjectHandleLease : IDisposable
     {
         private Access? _owner;
+        private SemaphoreSlim? _gate;
 
-        internal ProjectHandleLease(Access owner, nint handle)
+        internal ProjectHandleLease(Access owner, UplinkProjectSafeHandle handle, SemaphoreSlim? gate)
         {
             _owner = owner;
             Handle = handle;
+            _gate = gate;
         }
 
-        internal nint Handle { get; }
+        internal UplinkProjectSafeHandle Handle { get; }
 
         public void Dispose()
         {
-            var owner = System.Threading.Interlocked.Exchange(ref _owner, null);
-            owner?.ReleaseProjectLease(Handle);
+            var owner = Interlocked.Exchange(ref _owner, null);
+            try
+            {
+                owner?.ReleaseProjectLease(Handle);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _gate, null)?.Release();
+            }
         }
     }
 }

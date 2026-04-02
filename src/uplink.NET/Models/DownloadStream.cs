@@ -11,21 +11,23 @@ public class DownloadStream : Stream
     private readonly object _syncRoot = new();
     private readonly Access _access;
 
-    private nint _downloadHandle;
+    private UplinkDownloadSafeHandle? _downloadHandle;
     private Access.ProjectHandleLease? _projectLease;
     private readonly long _length;
     private long _position;
     private bool _disposed;
     private bool _endOfStream;
 
-    internal DownloadStream(nint downloadHandle, long length, Access.ProjectHandleLease projectLease, Access access)
+    internal DownloadStream(UplinkDownloadSafeHandle downloadHandle, long length, Access.ProjectHandleLease projectLease, Access access)
     {
-        if (downloadHandle == nint.Zero)
-            throw new ArgumentException("A valid native download handle is required.", nameof(downloadHandle));
+        ArgumentNullException.ThrowIfNull(downloadHandle);
         ArgumentNullException.ThrowIfNull(projectLease);
         ArgumentNullException.ThrowIfNull(access);
-        _access = access;
 
+        if (downloadHandle.IsInvalid)
+            throw new ArgumentException("A valid native download handle is required.", nameof(downloadHandle));
+
+        _access = access;
         _downloadHandle = downloadHandle;
         _projectLease = projectLease;
         _length = Math.Max(0, length);
@@ -88,7 +90,8 @@ public class DownloadStream : Stream
             if (_endOfStream)
                 return 0;
 
-            var (bytesRead, eof, error) = ReadChunk(_downloadHandle, buffer);
+            var handle = _downloadHandle ?? throw new ObjectDisposedException(nameof(DownloadStream));
+            var (bytesRead, eof, error) = ReadChunk(handle, buffer);
             if (error != null)
                 throw new IOException($"Failed to read from Storj download stream: {error}");
 
@@ -143,13 +146,8 @@ public class DownloadStream : Stream
                 return;
 
             _disposed = true;
-
-            if (_downloadHandle != nint.Zero)
-            {
-                UplinkInterop.FreeDownloadHandle(_downloadHandle);
-                _downloadHandle = nint.Zero;
-            }
-
+            _downloadHandle?.Dispose();
+            _downloadHandle = null;
             _projectLease?.Dispose();
             _projectLease = null;
         }
@@ -157,34 +155,35 @@ public class DownloadStream : Stream
         base.Dispose(disposing);
     }
 
-    ~DownloadStream() => Dispose(false);
-
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
 
     private unsafe (int bytesRead, bool eof, string? error) ReadChunk(
-        nint handle,
+        UplinkDownloadSafeHandle handle,
         Span<byte> buffer)
     {
-        using var trace = _access.Trace("uplink_download_read", ("bufferLength", buffer.Length));
+        using var trace = _access.Trace(
+            "uplink_download_read",
+            ("downloadHandle", handle.DangerousHandle),
+            ("bufferLength", buffer.Length));
         UplinkInterop.UplinkReadResult readResult;
         fixed (byte* bufPtr = buffer)
         {
             readResult = UplinkInterop.uplink_download_read(
-                handle,
+                handle.DangerousHandle,
                 bufPtr,
                 (nuint)buffer.Length);
         }
 
         try
         {
-            int bytesRead = (int)(nuint)readResult.bytes_read;
+            var bytesRead = (int)(nuint)readResult.bytes_read;
             if (readResult.error != nint.Zero)
             {
                 var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref readResult.error);
-                bool isEof = code == UplinkInterop.EndOfFileErrorCode
+                var isEof = code == UplinkInterop.EndOfFileErrorCode
                     || msg.Contains("EOF", StringComparison.OrdinalIgnoreCase);
                 if (isEof)
                     trace?.Success("Reached EOF.");

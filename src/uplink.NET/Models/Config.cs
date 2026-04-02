@@ -7,4 +7,5 @@ public class Config
     public string TempDirectory { get; set; } = string.Empty;
     public bool EnableDiagnostics { get; set; }
     public string DiagnosticsLogFilePath { get; set; } = string.Empty;
+    public bool SerializeNativeOperations { get; set; }
 }
