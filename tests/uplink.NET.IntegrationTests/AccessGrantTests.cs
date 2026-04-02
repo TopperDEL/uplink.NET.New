@@ -22,12 +22,12 @@ public class AccessGrantTests
         {
             await bucketService.EnsureBucketAsync(context.BucketName);
 
-            var allowedUpload = await objectService.UploadObjectAsync(context.Access, context.BucketName, allowedObjectKey, payload, startImmediately: false);
+            var allowedUpload = await objectService.UploadObjectAsync(context.BucketName, allowedObjectKey, payload, startImmediately: false);
             var allowedUploadTask = allowedUpload.StartUploadAsync();
             Assert.NotNull(allowedUploadTask);
             await allowedUploadTask;
 
-            var blockedUpload = await objectService.UploadObjectAsync(context.Access, context.BucketName, blockedObjectKey, payload, startImmediately: false);
+            var blockedUpload = await objectService.UploadObjectAsync(context.BucketName, blockedObjectKey, payload, startImmediately: false);
             var blockedUploadTask = blockedUpload.StartUploadAsync();
             Assert.NotNull(blockedUploadTask);
             await blockedUploadTask;
@@ -46,17 +46,18 @@ public class AccessGrantTests
             Assert.False(string.IsNullOrWhiteSpace(serialized));
 
             using var reparsedAccess = new Access(serialized);
+            var reparsedObjectService = new ObjectService(reparsedAccess);
 
-            var allowedObject = await objectService.GetObjectAsync(reparsedAccess, context.BucketName, allowedObjectKey);
+            var allowedObject = await reparsedObjectService.GetObjectAsync(context.BucketName, allowedObjectKey);
             Assert.Equal(allowedObjectKey, allowedObject.Key);
 
-            await Assert.ThrowsAnyAsync<Exception>(() => objectService.GetObjectAsync(reparsedAccess, context.BucketName, blockedObjectKey));
+            await Assert.ThrowsAnyAsync<Exception>(() => reparsedObjectService.GetObjectAsync(context.BucketName, blockedObjectKey));
         }
         finally
         {
             try
             {
-                await objectService.DeleteObjectAsync(context.Access, context.BucketName, allowedObjectKey);
+                await objectService.DeleteObjectAsync(context.BucketName, allowedObjectKey);
             }
             catch (ObjectNotFoundException)
             {
@@ -64,7 +65,7 @@ public class AccessGrantTests
 
             try
             {
-                await objectService.DeleteObjectAsync(context.Access, context.BucketName, blockedObjectKey);
+                await objectService.DeleteObjectAsync(context.BucketName, blockedObjectKey);
             }
             catch (ObjectNotFoundException)
             {
@@ -86,7 +87,7 @@ public class AccessGrantTests
         {
             await bucketService.EnsureBucketAsync(context.BucketName);
 
-            var upload = await objectService.UploadObjectAsync(context.Access, context.BucketName, objectKey, payload, startImmediately: false);
+            var upload = await objectService.UploadObjectAsync(context.BucketName, objectKey, payload, startImmediately: false);
             var uploadTask = upload.StartUploadAsync();
             Assert.NotNull(uploadTask);
             await uploadTask;
@@ -102,7 +103,8 @@ public class AccessGrantTests
                 });
 
             var serializedChildAccess = childAccess.Serialize();
-            var childObject = await objectService.GetObjectAsync(childAccess, context.BucketName, objectKey);
+            var childObjectService = new ObjectService(childAccess);
+            var childObject = await childObjectService.GetObjectAsync(context.BucketName, objectKey);
             Assert.Equal(objectKey, childObject.Key);
 
             await context.Access.RevokeAsync(childAccess);
@@ -112,7 +114,7 @@ public class AccessGrantTests
         {
             try
             {
-                await objectService.DeleteObjectAsync(context.Access, context.BucketName, objectKey);
+                await objectService.DeleteObjectAsync(context.BucketName, objectKey);
             }
             catch (ObjectNotFoundException)
             {
@@ -130,7 +132,7 @@ public class AccessGrantTests
             {
                 using var revokedAccess = new Access(serializedChildAccess);
                 var objectService = new ObjectService(revokedAccess);
-                await objectService.GetObjectAsync(revokedAccess, bucketName, objectKey);
+                await objectService.GetObjectAsync(bucketName, objectKey);
             }
             catch (Exception ex) when (ex is AccessException or ObjectNotFoundException or IOException)
             {

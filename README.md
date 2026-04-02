@@ -31,16 +31,16 @@ var bucket = await buckets.EnsureBucketAsync("my-bucket");
 
 // Upload a file
 byte[] data = File.ReadAllBytes("photo.jpg");
-var upload = await objects.UploadObjectAsync(access, "my-bucket", "photos/photo.jpg", data);
+var upload = await objects.UploadObjectAsync("my-bucket", "photos/photo.jpg", data);
 // upload.StartUploadAsync() is called automatically (startImmediately defaults to true)
 
 // List objects
-var list = await objects.ListObjectsAsync(access, "my-bucket");
+var list = await objects.ListObjectsAsync("my-bucket");
 foreach (var obj in list.Items)
     Console.WriteLine($"{obj.Key} ({obj.ContentLength} bytes)");
 
 // Download
-var download = await objects.DownloadObjectAsync(access, "my-bucket", "photos/photo.jpg", startImmediately: true);
+var download = await objects.DownloadObjectAsync("my-bucket", "photos/photo.jpg", startImmediately: true);
 download.DownloadOperationEnded += op =>
 {
     if (op.Completed)
@@ -48,7 +48,7 @@ download.DownloadOperationEnded += op =>
 };
 
 // Stream download
-using var stream = await objects.GetObjectAsStream(access, "my-bucket", "photos/photo.jpg");
+using var stream = await objects.GetObjectAsStream("my-bucket", "photos/photo.jpg");
 using var file = File.Create("downloaded-stream.jpg");
 await stream.CopyToAsync(file);
 ```

@@ -31,7 +31,7 @@ public class StorjSmokeTests
             var bucket = await bucketService.EnsureBucketAsync(context.BucketName);
             Assert.Equal(context.BucketName, bucket.Name);
 
-            var upload = await objectService.UploadObjectAsync(context.Access, context.BucketName, objectKey, payload, startImmediately: false);
+            var upload = await objectService.UploadObjectAsync(context.BucketName, objectKey, payload, startImmediately: false);
             var uploadTask = upload.StartUploadAsync();
             Assert.NotNull(uploadTask);
             await uploadTask;
@@ -39,11 +39,11 @@ public class StorjSmokeTests
             Assert.False(upload.Failed);
             Assert.False(upload.Cancelled);
 
-            var storedObject = await objectService.GetObjectAsync(context.Access, context.BucketName, objectKey);
+            var storedObject = await objectService.GetObjectAsync(context.BucketName, objectKey);
             Assert.Equal(objectKey, storedObject.Key);
             Assert.Equal(payload.Length, storedObject.ContentLength);
 
-            var download = await objectService.DownloadObjectAsync(context.Access, context.BucketName, objectKey, startImmediately: false);
+            var download = await objectService.DownloadObjectAsync(context.BucketName, objectKey, startImmediately: false);
             var downloadTask = download.StartDownloadAsync();
             Assert.NotNull(downloadTask);
             await downloadTask;
@@ -56,14 +56,14 @@ public class StorjSmokeTests
         {
             try
             {
-                await objectService.DeleteObjectAsync(context.Access, context.BucketName, objectKey);
+                await objectService.DeleteObjectAsync(context.BucketName, objectKey);
             }
             catch (ObjectNotFoundException)
             {
             }
         }
 
-        await Assert.ThrowsAsync<ObjectNotFoundException>(() => objectService.GetObjectAsync(context.Access, context.BucketName, objectKey));
+        await Assert.ThrowsAsync<ObjectNotFoundException>(() => objectService.GetObjectAsync(context.BucketName, objectKey));
     }
 
     [StorjIntegrationTheory]
@@ -80,7 +80,7 @@ public class StorjSmokeTests
         {
             await bucketService.EnsureBucketAsync(context.BucketName);
 
-            var upload = await objectService.UploadObjectAsync(context.Access, context.BucketName, objectKey, payload, startImmediately: false);
+            var upload = await objectService.UploadObjectAsync(context.BucketName, objectKey, payload, startImmediately: false);
             var uploadTask = upload.StartUploadAsync();
             Assert.NotNull(uploadTask);
             await uploadTask;
@@ -90,11 +90,11 @@ public class StorjSmokeTests
             Assert.False(upload.Cancelled);
             Assert.Equal(payload.Length, upload.BytesSent);
 
-            var storedObject = await objectService.GetObjectAsync(context.Access, context.BucketName, objectKey);
+            var storedObject = await objectService.GetObjectAsync(context.BucketName, objectKey);
             Assert.Equal(objectKey, storedObject.Key);
             Assert.Equal(payload.Length, storedObject.ContentLength);
 
-            var download = await objectService.DownloadObjectAsync(context.Access, context.BucketName, objectKey, startImmediately: false);
+            var download = await objectService.DownloadObjectAsync(context.BucketName, objectKey, startImmediately: false);
             var downloadTask = download.StartDownloadAsync();
             Assert.NotNull(downloadTask);
             await downloadTask;
@@ -127,7 +127,6 @@ public class StorjSmokeTests
 
             using var uploadStream = new MemoryStream(payload, writable: false);
             var upload = await objectService.UploadObjectAsync(
-                context.Access,
                 context.BucketName,
                 objectKey,
                 uploadStream,
@@ -143,7 +142,7 @@ public class StorjSmokeTests
             Assert.False(upload.Cancelled);
             Assert.Equal(payload.Length, upload.BytesSent);
 
-            using var downloadStream = await objectService.GetObjectAsStream(context.Access, context.BucketName, objectKey);
+            using var downloadStream = await objectService.GetObjectAsStream(context.BucketName, objectKey);
             using var result = new MemoryStream();
             await downloadStream.CopyToAsync(result);
 
@@ -172,13 +171,13 @@ public class StorjSmokeTests
         {
             await bucketService.EnsureBucketAsync(context.BucketName);
 
-            var upload = await objectService.UploadObjectAsync(context.Access, context.BucketName, objectKey, payload, startImmediately: false);
+            var upload = await objectService.UploadObjectAsync(context.BucketName, objectKey, payload, startImmediately: false);
             var uploadTask = upload.StartUploadAsync();
             Assert.NotNull(uploadTask);
             await uploadTask;
             Assert.True(upload.Completed);
 
-            using var fullStream = await objectService.GetObjectAsStream(context.Access, context.BucketName, objectKey);
+            using var fullStream = await objectService.GetObjectAsStream(context.BucketName, objectKey);
             using var fullResult = new MemoryStream();
             var buffer = new byte[4096];
 
@@ -191,7 +190,6 @@ public class StorjSmokeTests
             Assert.Equal(payload, fullResult.ToArray());
 
             using var rangeStream = await objectService.GetObjectAsStream(
-                context.Access,
                 context.BucketName,
                 objectKey,
                 new DownloadOptions
@@ -209,7 +207,7 @@ public class StorjSmokeTests
         {
             try
             {
-                await objectService.DeleteObjectAsync(context.Access, context.BucketName, objectKey);
+                await objectService.DeleteObjectAsync(context.BucketName, objectKey);
             }
             catch (ObjectNotFoundException)
             {
@@ -224,7 +222,7 @@ public class StorjSmokeTests
     {
         try
         {
-            await objectService.DeleteObjectAsync(context.Access, context.BucketName, objectKey);
+            await objectService.DeleteObjectAsync(context.BucketName, objectKey);
         }
         catch (ObjectNotFoundException)
         {

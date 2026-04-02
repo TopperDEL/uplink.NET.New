@@ -18,65 +18,65 @@ public class ObjectService : IObjectService
     // ── Upload overloads ──────────────────────────────────────────────────────
 
     public Task<UploadOperation> UploadObjectAsync(
-        Access access, string bucketName, string key, byte[] objectData)
-        => CreateUploadOpAsync(access, bucketName, key, objectData,
+        string bucketName, string key, byte[] objectData)
+        => CreateUploadOpAsync(bucketName, key, objectData,
             new UploadOptions(), null, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
-        Access access, string bucketName, string key, byte[] objectData, bool startImmediately)
-        => CreateUploadOpAsync(access, bucketName, key, objectData,
+        string bucketName, string key, byte[] objectData, bool startImmediately)
+        => CreateUploadOpAsync(bucketName, key, objectData,
             new UploadOptions(), null, startImmediately);
 
     public Task<UploadOperation> UploadObjectAsync(
-        Access access, string bucketName, string key, byte[] objectData, UploadOptions uploadOptions)
-        => CreateUploadOpAsync(access, bucketName, key, objectData,
+        string bucketName, string key, byte[] objectData, UploadOptions uploadOptions)
+        => CreateUploadOpAsync(bucketName, key, objectData,
             uploadOptions, null, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
-        Access access, string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, bool startImmediately)
-        => CreateUploadOpAsync(access, bucketName, key, objectData,
+        string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, bool startImmediately)
+        => CreateUploadOpAsync(bucketName, key, objectData,
             uploadOptions, null, startImmediately);
 
     public Task<UploadOperation> UploadObjectAsync(
-        Access access, string bucketName, string key, byte[] objectData, CustomMetadata customMetadata)
-        => CreateUploadOpAsync(access, bucketName, key, objectData,
+        string bucketName, string key, byte[] objectData, CustomMetadata customMetadata)
+        => CreateUploadOpAsync(bucketName, key, objectData,
             new UploadOptions(), customMetadata, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
-        Access access, string bucketName, string key, byte[] objectData, CustomMetadata customMetadata, bool startImmediately)
-        => CreateUploadOpAsync(access, bucketName, key, objectData,
+        string bucketName, string key, byte[] objectData, CustomMetadata customMetadata, bool startImmediately)
+        => CreateUploadOpAsync(bucketName, key, objectData,
             new UploadOptions(), customMetadata, startImmediately);
 
     public Task<UploadOperation> UploadObjectAsync(
-        Access access, string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, CustomMetadata customMetadata)
-        => CreateUploadOpAsync(access, bucketName, key, objectData,
+        string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, CustomMetadata customMetadata)
+        => CreateUploadOpAsync(bucketName, key, objectData,
             uploadOptions, customMetadata, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
-        Access access, string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, CustomMetadata customMetadata, bool startImmediately)
-        => CreateUploadOpAsync(access, bucketName, key, objectData,
+        string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, CustomMetadata customMetadata, bool startImmediately)
+        => CreateUploadOpAsync(bucketName, key, objectData,
             uploadOptions, customMetadata, startImmediately);
 
     public async Task<UploadOperation> UploadObjectAsync(
-        Access access, string bucketName, string key, Stream stream,
+        string bucketName, string key, Stream stream,
         UploadOptions? uploadOptions, CustomMetadata? customMetadata, bool startImmediately)
     {
         using var ms = new MemoryStream();
         await stream.CopyToAsync(ms).ConfigureAwait(false);
         return await CreateUploadOpAsync(
-            access, bucketName, key, ms.ToArray(),
+            bucketName, key, ms.ToArray(),
             uploadOptions ?? new UploadOptions(),
             customMetadata,
             startImmediately).ConfigureAwait(false);
     }
 
     // Internal helper that all upload overloads funnel into
-    private static Task<UploadOperation> CreateUploadOpAsync(
-        Access access, string bucketName, string key, byte[] objectData,
+    private Task<UploadOperation> CreateUploadOpAsync(
+        string bucketName, string key, byte[] objectData,
         UploadOptions? uploadOptions, CustomMetadata? customMetadata, bool startImmediately)
     {
         var op = new UploadOperation(
-            access._projectHandle,
+            _access._projectHandle,
             bucketName,
             key,
             objectData,
@@ -92,7 +92,7 @@ public class ObjectService : IObjectService
     // ── Chunked upload ─────────────────────────────────────────────────────────
 
     public unsafe Task<ChunkedUploadOperation> UploadObjectChunkedAsync(
-        Access access, string bucketName, string key,
+        string bucketName, string key,
         UploadOptions? uploadOptions, CustomMetadata? customMetadata)
     {
         var opts = new UplinkInterop.UplinkUploadOptions
@@ -102,7 +102,7 @@ public class ObjectService : IObjectService
 
         UplinkInterop.UplinkUploadResult uploadResult;
         uploadResult = UplinkInterop.uplink_upload_object(
-            access._projectHandle, bucketName, key, &opts);
+            _access._projectHandle, bucketName, key, &opts);
 
         if (uploadResult.error != nint.Zero)
         {
@@ -122,11 +122,11 @@ public class ObjectService : IObjectService
 
     // ── List ──────────────────────────────────────────────────────────────────
 
-    public Task<ObjectList> ListObjectsAsync(Access access, string bucketName)
-        => ListObjectsAsync(access, bucketName, new ListObjectsOptions());
+    public Task<ObjectList> ListObjectsAsync(string bucketName)
+        => ListObjectsAsync(bucketName, new ListObjectsOptions());
 
     public unsafe Task<ObjectList> ListObjectsAsync(
-        Access access, string bucketName, ListObjectsOptions opts)
+        string bucketName, ListObjectsOptions opts)
     {
         return Task.Run(() =>
         {
@@ -146,7 +146,7 @@ public class ObjectService : IObjectService
                 };
 
                 nint iterator = UplinkInterop.uplink_list_objects(
-                    access._projectHandle, bucketPtr, &nativeOpts);
+                    _access._projectHandle, bucketPtr, &nativeOpts);
 
                 var list = new ObjectList();
                 try
@@ -182,11 +182,11 @@ public class ObjectService : IObjectService
 
     // ── Stat ──────────────────────────────────────────────────────────────────
 
-    public Task<StorjObject> GetObjectAsync(Access access, string bucketName, string key)
+    public Task<StorjObject> GetObjectAsync(string bucketName, string key)
     {
         return Task.Run(() =>
         {
-            var result = UplinkInterop.uplink_stat_object(access._projectHandle, bucketName, key);
+            var result = UplinkInterop.uplink_stat_object(_access._projectHandle, bucketName, key);
             try
             {
                 if (result.error != nint.Zero)
@@ -204,13 +204,11 @@ public class ObjectService : IObjectService
     }
 
     public Task<DownloadStream> GetObjectAsStream(
-        Access access,
         string bucketName,
         string key)
-        => GetObjectAsStream(access, bucketName, key, new DownloadOptions());
+        => GetObjectAsStream(bucketName, key, new DownloadOptions());
 
     public Task<DownloadStream> GetObjectAsStream(
-        Access access,
         string bucketName,
         string key,
         DownloadOptions downloadOptions)
@@ -220,7 +218,7 @@ public class ObjectService : IObjectService
             var handle = nint.Zero;
             try
             {
-                handle = OpenDownloadHandle(access._projectHandle, bucketName, key, downloadOptions);
+                handle = OpenDownloadHandle(_access._projectHandle, bucketName, key, downloadOptions);
                 var length = GetDownloadLength(handle, downloadOptions);
                 var stream = new DownloadStream(handle, length);
                 handle = nint.Zero;
@@ -240,15 +238,15 @@ public class ObjectService : IObjectService
     // ── Download ──────────────────────────────────────────────────────────────
 
     public Task<DownloadOperation> DownloadObjectAsync(
-        Access access, string bucketName, string key, bool startImmediately)
-        => DownloadObjectAsync(access, bucketName, key, new DownloadOptions(), startImmediately);
+        string bucketName, string key, bool startImmediately)
+        => DownloadObjectAsync(bucketName, key, new DownloadOptions(), startImmediately);
 
     public Task<DownloadOperation> DownloadObjectAsync(
-        Access access, string bucketName, string key,
+        string bucketName, string key,
         DownloadOptions downloadOptions, bool startImmediately)
     {
         var op = new DownloadOperation(
-            access._projectHandle, bucketName, key, downloadOptions);
+            _access._projectHandle, bucketName, key, downloadOptions);
 
         if (startImmediately)
             op.StartDownloadAsync();
@@ -258,11 +256,11 @@ public class ObjectService : IObjectService
 
     // ── Delete ────────────────────────────────────────────────────────────────
 
-    public Task DeleteObjectAsync(Access access, string bucketName, string key)
+    public Task DeleteObjectAsync(string bucketName, string key)
     {
         return Task.Run(() =>
         {
-            var result = UplinkInterop.uplink_delete_object(access._projectHandle, bucketName, key);
+            var result = UplinkInterop.uplink_delete_object(_access._projectHandle, bucketName, key);
             try
             {
                 if (result.error != nint.Zero)
