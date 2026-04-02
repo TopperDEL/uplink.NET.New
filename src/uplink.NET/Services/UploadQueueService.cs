@@ -167,7 +167,10 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
                 return;
             }
 
-            if (_cts?.IsCancellationRequested != true || _restartScheduled)
+            if (_restartScheduled)
+                return;
+
+            if (_cts?.IsCancellationRequested != true)
                 return;
 
             _restartScheduled = true;
@@ -271,6 +274,7 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
                     tcs.TrySetResult(false);
             };
 
+            // Keep the queue resilient if StartUploadAsync ever gains a fast-path that returns no task.
             var uploadTask = uploadOp.StartUploadAsync() ?? Task.CompletedTask;
             bool success = await tcs.Task.ConfigureAwait(false);
             // Wait for final native cleanup and lease release before disposing the per-entry Access.

@@ -117,8 +117,6 @@ public class ObjectService : IObjectService
         }
 
         var uploadHandle = uploadResult.upload;
-        // Ownership moves to ChunkedUploadOperation and the catch/finally cleanup path below, so the result wrapper must not free the upload handle.
-        uploadResult.upload = nint.Zero;
         var uploadHandleTransferred = false;
 
         try
@@ -136,6 +134,8 @@ public class ObjectService : IObjectService
                 SetCustomMetadataNative(uploadHandle, customMetadata, metadataTrace);
             }
 
+            // Ownership moves to ChunkedUploadOperation and the catch/finally cleanup path below, so the result wrapper must not free the upload handle.
+            uploadResult.upload = nint.Zero;
             trace?.Success();
             uploadHandleTransferred = true;
             return Task.FromResult(new ChunkedUploadOperation(uploadHandle, objectKey, projectLease, _access));
