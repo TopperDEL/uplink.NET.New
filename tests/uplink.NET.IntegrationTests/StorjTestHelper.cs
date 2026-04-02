@@ -116,6 +116,7 @@ internal static class StorjTestHelper
         }
         catch (ObjectNotFoundException)
         {
+            // Cleanup is best-effort because setup may fail before the object is created.
         }
     }
 
@@ -129,8 +130,15 @@ internal static class StorjTestHelper
         }
         catch (BucketDeletionException)
         {
+            // Cleanup is best-effort because the bucket may not exist or may already be deleted.
         }
     }
+
+    public static Task WaitUntilAsync(
+        Func<bool> predicate,
+        TimeSpan timeout,
+        string failureMessage)
+        => WaitUntilAsync(() => Task.FromResult(predicate()), timeout, failureMessage);
 
     public static async Task WaitUntilAsync(
         Func<Task<bool>> predicate,

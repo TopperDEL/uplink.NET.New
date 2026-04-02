@@ -212,7 +212,7 @@ public class ObjectServiceTests
             var uploadTask = upload.StartUploadAsync();
 
             await StorjTestHelper.WaitUntilAsync(
-                () => Task.FromResult(upload.BytesSent > 0 || upload.Completed),
+                () => upload.BytesSent > 0 || upload.Completed,
                 TimeSpan.FromSeconds(30),
                 "Timed out waiting for the overlapping upload to begin.");
 

@@ -55,7 +55,7 @@ public class UploadQueueServiceTests
             queueService.ProcessQueueInBackground();
 
             await StorjTestHelper.WaitUntilAsync(
-                () => Task.FromResult(queueService.UploadInProgress),
+                () => queueService.UploadInProgress,
                 TimeSpan.FromSeconds(30),
                 "Timed out waiting for the queue to start processing uploads.");
 
@@ -214,7 +214,7 @@ public class UploadQueueServiceTests
         var secondPayload = IntegrationTestEnvironment.CreatePayload(payloadSize);
         var metadata = withMetadata
             ? new CustomMetadata { Entries = { ["origin"] = "queue-test", ["size"] = payloadSize.ToString() } }
-            : new CustomMetadata();
+            : null;
         await using var queueService = new UploadQueueService(Path.Combine(context.TempDirectory, $"{payloadSize}-{useStreams}-{withMetadata}.sqlite"));
 
         try
@@ -225,13 +225,29 @@ public class UploadQueueServiceTests
             {
                 await using var firstStream = new MemoryStream(firstPayload, writable: false);
                 await using var secondStream = new MemoryStream(secondPayload, writable: false);
-                await queueService.AddObjectToUploadQueueAsync(context.BucketName, firstKey, accessGrant, firstStream, "first", metadata);
-                await queueService.AddObjectToUploadQueueAsync(context.BucketName, secondKey, accessGrant, secondStream, "second", metadata);
+                if (metadata == null)
+                {
+                    await queueService.AddObjectToUploadQueueAsync(context.BucketName, firstKey, accessGrant, firstStream, "first");
+                    await queueService.AddObjectToUploadQueueAsync(context.BucketName, secondKey, accessGrant, secondStream, "second");
+                }
+                else
+                {
+                    await queueService.AddObjectToUploadQueueAsync(context.BucketName, firstKey, accessGrant, firstStream, "first", metadata);
+                    await queueService.AddObjectToUploadQueueAsync(context.BucketName, secondKey, accessGrant, secondStream, "second", metadata);
+                }
             }
             else
             {
-                await queueService.AddObjectToUploadQueueAsync(context.BucketName, firstKey, accessGrant, firstPayload, "first", metadata);
-                await queueService.AddObjectToUploadQueueAsync(context.BucketName, secondKey, accessGrant, secondPayload, "second", metadata);
+                if (metadata == null)
+                {
+                    await queueService.AddObjectToUploadQueueAsync(context.BucketName, firstKey, accessGrant, firstPayload, "first");
+                    await queueService.AddObjectToUploadQueueAsync(context.BucketName, secondKey, accessGrant, secondPayload, "second");
+                }
+                else
+                {
+                    await queueService.AddObjectToUploadQueueAsync(context.BucketName, firstKey, accessGrant, firstPayload, "first", metadata);
+                    await queueService.AddObjectToUploadQueueAsync(context.BucketName, secondKey, accessGrant, secondPayload, "second", metadata);
+                }
             }
 
             queueService.ProcessQueueInBackground();
