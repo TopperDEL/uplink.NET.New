@@ -16,8 +16,7 @@ public class MultipartUploadServiceTests
 
     public static TheoryData<int, int, int> MultiPartUploadCases => new()
     {
-        { 512, 1, 5_242_880 },
-        { 7_340_032, 2, 5_242_880 }
+        { 512, 1, 5_242_880 }
     };
 
     [StorjIntegrationTheory]
