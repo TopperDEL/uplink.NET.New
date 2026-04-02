@@ -11,7 +11,7 @@ internal static unsafe partial class UplinkInterop
 {
     private const string LibName = "storj_uplink";
     internal const int EndOfFileErrorCode = -1;
-    private static readonly object NativeHandleCleanupSync = new();
+    private static readonly object _nativeHandleCleanupSync = new();
 
     // ── Error ────────────────────────────────────────────────────────────────
     [StructLayout(LayoutKind.Sequential)]
@@ -532,7 +532,7 @@ internal static unsafe partial class UplinkInterop
     {
         if (project != nint.Zero)
         {
-            lock (NativeHandleCleanupSync)
+            lock (_nativeHandleCleanupSync)
             {
                 try
                 {
@@ -552,7 +552,7 @@ internal static unsafe partial class UplinkInterop
     {
         if (access != nint.Zero)
         {
-            lock (NativeHandleCleanupSync)
+            lock (_nativeHandleCleanupSync)
                 uplink_free_access_result(new UplinkAccessResult { access = access, error = nint.Zero });
         }
     }
@@ -561,7 +561,7 @@ internal static unsafe partial class UplinkInterop
     {
         if (upload != nint.Zero)
         {
-            lock (NativeHandleCleanupSync)
+            lock (_nativeHandleCleanupSync)
                 uplink_free_upload_result(new UplinkUploadResult { upload = upload, error = nint.Zero });
         }
     }
@@ -570,7 +570,7 @@ internal static unsafe partial class UplinkInterop
     {
         if (download != nint.Zero)
         {
-            lock (NativeHandleCleanupSync)
+            lock (_nativeHandleCleanupSync)
             {
                 try
                 {
@@ -590,7 +590,7 @@ internal static unsafe partial class UplinkInterop
     {
         if (partUpload != nint.Zero)
         {
-            lock (NativeHandleCleanupSync)
+            lock (_nativeHandleCleanupSync)
                 uplink_free_part_upload_result(new UplinkPartUploadResult { part_upload = partUpload, error = nint.Zero });
         }
     }
