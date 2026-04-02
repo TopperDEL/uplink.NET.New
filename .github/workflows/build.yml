@@ -1,5 +1,8 @@
 name: Build and Publish
 
+env:
+  UPLINK_C_REF: v1.10.1
+
 on:
   push:
     tags:
@@ -23,7 +26,7 @@ jobs:
       - name: Build uplink-c
         shell: bash
         run: |
-          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          git clone --branch "$UPLINK_C_REF" --depth 1 https://github.com/storj/uplink-c.git $HOME/uplink-c
           cd $HOME/uplink-c
           export GOOS=windows
           export GOARCH=amd64
@@ -48,7 +51,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
       - name: Build uplink-c
         run: |
-          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          git clone --branch "$UPLINK_C_REF" --depth 1 https://github.com/storj/uplink-c.git $HOME/uplink-c
           cd $HOME/uplink-c
           make build
           mkdir -p "$GITHUB_WORKSPACE/native/linux-x64"
@@ -69,7 +72,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
       - name: Build uplink-c
         run: |
-          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          git clone --branch "$UPLINK_C_REF" --depth 1 https://github.com/storj/uplink-c.git $HOME/uplink-c
           cd $HOME/uplink-c
           GOARCH=arm64 GOOS=linux CGO_ENABLED=1 make build
           mkdir -p "$GITHUB_WORKSPACE/native/linux-arm64"
@@ -90,7 +93,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
       - name: Build uplink-c x64
         run: |
-          git clone https://github.com/storj/uplink-c.git $HOME/uplink-c
+          git clone --branch "$UPLINK_C_REF" --depth 1 https://github.com/storj/uplink-c.git $HOME/uplink-c
           cd $HOME/uplink-c
           GOARCH=amd64 make build
           mkdir -p "$GITHUB_WORKSPACE/native/osx-x64"
@@ -191,6 +194,8 @@ jobs:
           if ($env:PACKAGE_VERSION) {
             $buildArgs += "-p:Version=$($env:PACKAGE_VERSION)"
           }
+
+          $buildArgs += "-p:StorjUplinkVersion=$($env:UPLINK_C_REF)"
 
           & dotnet @buildArgs
 

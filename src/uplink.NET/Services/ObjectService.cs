@@ -254,6 +254,63 @@ public class ObjectService : IObjectService
         return Task.FromResult(op);
     }
 
+    public Task<StorjObject> CopyObjectAsync(
+        string sourceBucketName,
+        string sourceKey,
+        string destinationBucketName,
+        string destinationKey)
+    {
+        return Task.Run(() =>
+        {
+            var result = UplinkInterop.uplink_copy_object(
+                _access._projectHandle,
+                sourceBucketName,
+                sourceKey,
+                destinationBucketName,
+                destinationKey,
+                nint.Zero);
+
+            try
+            {
+                if (result.error != nint.Zero)
+                {
+                    var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                    throw new IOException($"Failed to copy Storj object: {msg}");
+                }
+
+                return UplinkInterop.MarshalObject(result.object_);
+            }
+            finally
+            {
+                UplinkInterop.uplink_free_object_result(result);
+            }
+        });
+    }
+
+    public Task MoveObjectAsync(
+        string sourceBucketName,
+        string sourceKey,
+        string destinationBucketName,
+        string destinationKey)
+    {
+        return Task.Run(() =>
+        {
+            var errPtr = UplinkInterop.uplink_move_object(
+                _access._projectHandle,
+                sourceBucketName,
+                sourceKey,
+                destinationBucketName,
+                destinationKey,
+                nint.Zero);
+
+            if (errPtr != nint.Zero)
+            {
+                var (msg, _) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
+                throw new IOException($"Failed to move Storj object: {msg}");
+            }
+        });
+    }
+
     // ── Delete ────────────────────────────────────────────────────────────────
 
     public Task DeleteObjectAsync(string bucketName, string key)

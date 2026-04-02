@@ -25,6 +25,7 @@ using var access = new Access("your-access-grant-here");
 
 var buckets = new BucketService(access);
 var objects = new ObjectService(access);
+var storjVersion = Uplink.GetStorjVersion();
 
 // Create or ensure a bucket exists
 var bucket = await buckets.EnsureBucketAsync("my-bucket");
@@ -51,6 +52,10 @@ download.DownloadOperationEnded += op =>
 using var stream = await objects.GetObjectAsStream("my-bucket", "photos/photo.jpg");
 using var file = File.Create("downloaded-stream.jpg");
 await stream.CopyToAsync(file);
+
+// Copy / move objects
+await objects.CopyObjectAsync("my-bucket", "photos/photo.jpg", "my-bucket", "photos/photo-copy.jpg");
+await objects.MoveObjectAsync("my-bucket", "photos/photo-copy.jpg", "my-bucket", "photos/photo-moved.jpg");
 ```
 
 ## Project structure

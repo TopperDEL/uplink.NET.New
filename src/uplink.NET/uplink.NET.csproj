@@ -18,6 +18,8 @@
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <IsPackable>true</IsPackable>
+    <StorjUplinkVersion Condition="'$(StorjUplinkVersion)' == '' and '$(UPLINK_C_REF)' != ''">$(UPLINK_C_REF)</StorjUplinkVersion>
+    <StorjUplinkVersion Condition="'$(StorjUplinkVersion)' == ''">v1.10.1</StorjUplinkVersion>
   </PropertyGroup>
   <ItemGroup>
     <!-- Include native runtimes in NuGet package -->
@@ -27,5 +29,11 @@
   <ItemGroup>
     <PackageReference Include="sqlite-net-pcl" Version="1.9.172" />
     <PackageReference Include="SQLitePCLRaw.bundle_green" Version="2.1.10" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>StorjUplinkVersion</_Parameter1>
+      <_Parameter2>$(StorjUplinkVersion)</_Parameter2>
+    </AssemblyAttribute>
   </ItemGroup>
 </Project>
