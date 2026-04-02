@@ -332,23 +332,32 @@ public class Access : IDisposable
         {
             ThrowIfDisposedNoLock();
 
-            if (_projectHandle == nint.Zero)
+            if (_accessHandle == nint.Zero)
                 throw new ObjectDisposedException(nameof(Access));
 
+            var leaseHandle = OpenProjectHandle(_accessHandle, _config);
             _activeProjectLeases++;
-            return new ProjectHandleLease(this, _projectHandle);
+            return new ProjectHandleLease(this, leaseHandle);
         }
     }
 
-    private void ReleaseProjectLease()
+    private void ReleaseProjectLease(nint projectHandle)
     {
         lock (_lifetimeSync)
         {
-            if (_activeProjectLeases > 0)
-                _activeProjectLeases--;
+            try
+            {
+                if (projectHandle != nint.Zero)
+                    UplinkInterop.FreeProjectHandle(projectHandle);
+            }
+            finally
+            {
+                if (_activeProjectLeases > 0)
+                    _activeProjectLeases--;
 
-            if (_disposeRequested && _activeProjectLeases == 0)
-                ReleaseHandlesNoLock();
+                if (_disposeRequested && _activeProjectLeases == 0)
+                    ReleaseHandlesNoLock();
+            }
         }
     }
 
@@ -401,7 +410,7 @@ public class Access : IDisposable
         public void Dispose()
         {
             var owner = System.Threading.Interlocked.Exchange(ref _owner, null);
-            owner?.ReleaseProjectLease();
+            owner?.ReleaseProjectLease(Handle);
         }
     }
 }
