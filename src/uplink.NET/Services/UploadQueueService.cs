@@ -15,8 +15,6 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
     private const int PollingIntervalMs = 2_000;            // poll interval for the background loop
 
     private readonly SQLiteAsyncConnection _db;
-    private readonly ObjectService _objectService;
-
     private CancellationTokenSource? _cts;
     private Task? _processingTask;
     private bool _initialized;
@@ -27,11 +25,9 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
     public event UploadQueueChangedEventHandler? UploadQueueChangedEvent;
 
     /// <param name="databasePath">Full path to the SQLite database file.</param>
-    /// <param name="objectService">Object service used to perform actual uploads.</param>
-    public UploadQueueService(string databasePath, ObjectService objectService)
+    public UploadQueueService(string databasePath)
     {
-        _db            = new SQLiteAsyncConnection(databasePath);
-        _objectService = objectService ?? throw new ArgumentNullException(nameof(objectService));
+        _db = new SQLiteAsyncConnection(databasePath);
     }
 
     private async Task EnsureInitializedAsync()
@@ -204,10 +200,10 @@ public class UploadQueueService : IUploadQueueService, IDisposable, IAsyncDispos
             }
 
             using var access = new Access(entry.AccessGrant);
+            var objectService = new ObjectService(access);
             CustomMetadata? meta = DeserializeMetadata(entry.CustomMetadataJson);
 
-            var uploadOp = await _objectService.UploadObjectAsync(
-                access,
+            var uploadOp = await objectService.UploadObjectAsync(
                 entry.BucketName,
                 entry.Key,
                 data.Bytes,
