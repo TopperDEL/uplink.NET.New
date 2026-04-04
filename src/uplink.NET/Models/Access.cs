@@ -18,6 +18,7 @@ public class Access : IDisposable
     private readonly Config? _config;
     private readonly UplinkDiagnosticsSession? _diagnostics;
     private readonly object _lifetimeSync = new();
+    private int _activeAccessLeases;
     private int _activeProjectLeases;
     private bool _disposeRequested;
     private bool _disposed;
@@ -133,11 +134,10 @@ public class Access : IDisposable
     /// <summary>Share this access grant with the supplied permission set and prefixes.</summary>
     public unsafe Access Share(Permission permission, IEnumerable<SharePrefix> prefixes)
     {
-        ThrowIfDisposed();
-
         ArgumentNullException.ThrowIfNull(permission);
         ArgumentNullException.ThrowIfNull(prefixes);
 
+        using var accessLease = AcquireAccessLease();
         var sharePrefixes = prefixes.ToArray();
         var nativePrefixes = new UplinkInterop.UplinkSharePrefix[sharePrefixes.Length];
 
@@ -170,12 +170,12 @@ public class Access : IDisposable
         {
             if (nativePrefixes.Length == 0)
             {
-                result = UplinkInterop.uplink_access_share(_accessHandle, nativePermission, null, 0);
+                result = UplinkInterop.uplink_access_share(accessLease.Handle, nativePermission, null, 0);
             }
             else
             {
                 fixed (UplinkInterop.UplinkSharePrefix* prefixesPtr = nativePrefixes)
-                    result = UplinkInterop.uplink_access_share(_accessHandle, nativePermission, prefixesPtr, checked((nint)nativePrefixes.Length));
+                    result = UplinkInterop.uplink_access_share(accessLease.Handle, nativePermission, prefixesPtr, checked((nint)nativePrefixes.Length));
             }
 
             try
@@ -220,30 +220,39 @@ public class Access : IDisposable
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(childAccess);
-        childAccess.ThrowIfDisposed();
-
+        var childAccessLease = childAccess.AcquireAccessLease();
         var projectLease = AcquireProjectLease();
 
-        return Task.Run(() =>
+        try
         {
-            using var trace = Trace("uplink_revoke_access");
-            try
+            return Task.Run(() =>
             {
-                var errPtr = UplinkInterop.uplink_revoke_access(projectLease.Handle, childAccess._accessHandle);
-                if (errPtr != nint.Zero)
+                using var trace = Trace("uplink_revoke_access");
+                try
                 {
-                    var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
-                    trace?.NativeError(msg, code);
-                    throw new AccessException($"Failed to revoke access grant: {msg}");
-                }
+                    var errPtr = UplinkInterop.uplink_revoke_access(projectLease.Handle, childAccessLease.Handle);
+                    if (errPtr != nint.Zero)
+                    {
+                        var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
+                        trace?.NativeError(msg, code);
+                        throw new AccessException($"Failed to revoke access grant: {msg}");
+                    }
 
-                trace?.Success();
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
+                    trace?.Success();
+                }
+                finally
+                {
+                    childAccessLease.Dispose();
+                    projectLease.Dispose();
+                }
+            });
+        }
+        catch
+        {
+            childAccessLease.Dispose();
+            projectLease.Dispose();
+            throw;
+        }
     }
 
     private static UplinkInterop.UplinkConfig BuildNativeConfig(Config? config)
@@ -373,8 +382,22 @@ public class Access : IDisposable
 
             _disposeRequested = true;
 
-            if (_activeProjectLeases == 0)
+            if (_activeAccessLeases == 0 && _activeProjectLeases == 0)
                 ReleaseHandlesNoLock();
+        }
+    }
+
+    internal AccessHandleLease AcquireAccessLease()
+    {
+        lock (_lifetimeSync)
+        {
+            ThrowIfDisposedNoLock();
+
+            if (_accessHandle == nint.Zero)
+                throw new ObjectDisposedException(nameof(Access));
+
+            _activeAccessLeases++;
+            return new AccessHandleLease(this, _accessHandle);
         }
     }
 
@@ -407,9 +430,21 @@ public class Access : IDisposable
                 if (_activeProjectLeases > 0)
                     _activeProjectLeases--;
 
-                if (_disposeRequested && _activeProjectLeases == 0)
+                if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
                     ReleaseHandlesNoLock();
             }
+        }
+    }
+
+    private void ReleaseAccessLease()
+    {
+        lock (_lifetimeSync)
+        {
+            if (_activeAccessLeases > 0)
+                _activeAccessLeases--;
+
+            if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
+                ReleaseHandlesNoLock();
         }
     }
 
@@ -463,6 +498,25 @@ public class Access : IDisposable
         {
             var owner = System.Threading.Interlocked.Exchange(ref _owner, null);
             owner?.ReleaseProjectLease(Handle);
+        }
+    }
+
+    internal sealed class AccessHandleLease : IDisposable
+    {
+        private Access? _owner;
+
+        internal AccessHandleLease(Access owner, nint handle)
+        {
+            _owner = owner;
+            Handle = handle;
+        }
+
+        internal nint Handle { get; }
+
+        public void Dispose()
+        {
+            var owner = System.Threading.Interlocked.Exchange(ref _owner, null);
+            owner?.ReleaseAccessLease();
         }
     }
 }
