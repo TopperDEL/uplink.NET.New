@@ -216,43 +216,25 @@ public class Access : IDisposable
     }
 
     /// <summary>Revoke a child access grant that was derived from this access grant.</summary>
-    public Task RevokeAsync(Access childAccess)
+    public async Task RevokeAsync(Access childAccess)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(childAccess);
-        var childAccessLease = childAccess.AcquireAccessLease();
-        var projectLease = AcquireProjectLease();
-
-        try
+        using var childAccessLease = childAccess.AcquireAccessLease();
+        using var projectLease = AcquireProjectLease();
+        await Task.Run(() =>
         {
-            return Task.Run(() =>
+            using var trace = Trace("uplink_revoke_access");
+            var errPtr = UplinkInterop.uplink_revoke_access(projectLease.Handle, childAccessLease.Handle);
+            if (errPtr != nint.Zero)
             {
-                using var trace = Trace("uplink_revoke_access");
-                try
-                {
-                    var errPtr = UplinkInterop.uplink_revoke_access(projectLease.Handle, childAccessLease.Handle);
-                    if (errPtr != nint.Zero)
-                    {
-                        var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
-                        trace?.NativeError(msg, code);
-                        throw new AccessException($"Failed to revoke access grant: {msg}");
-                    }
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
+                trace?.NativeError(msg, code);
+                throw new AccessException($"Failed to revoke access grant: {msg}");
+            }
 
-                    trace?.Success();
-                }
-                finally
-                {
-                    childAccessLease.Dispose();
-                    projectLease.Dispose();
-                }
-            });
-        }
-        catch
-        {
-            childAccessLease.Dispose();
-            projectLease.Dispose();
-            throw;
-        }
+            trace?.Success();
+        });
     }
 
     private static UplinkInterop.UplinkConfig BuildNativeConfig(Config? config)

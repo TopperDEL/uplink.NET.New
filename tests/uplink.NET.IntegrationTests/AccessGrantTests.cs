@@ -51,7 +51,7 @@ public class AccessGrantTests
             var allowedObject = await reparsedObjectService.GetObjectAsync(context.BucketName, allowedObjectKey);
             Assert.Equal(allowedObjectKey, allowedObject.Key);
 
-            await Assert.ThrowsAnyAsync<Exception>(() => reparsedObjectService.GetObjectAsync(context.BucketName, blockedObjectKey));
+            await Assert.ThrowsAsync<ObjectNotFoundException>(() => reparsedObjectService.GetObjectAsync(context.BucketName, blockedObjectKey));
         }
         finally
         {
@@ -156,7 +156,7 @@ public class AccessGrantTests
             var allowedObject = await childObjectService.GetObjectAsync(context.BucketName, allowedObjectKey);
             Assert.Equal(allowedObjectKey, allowedObject.Key);
 
-            await Assert.ThrowsAnyAsync<Exception>(() => childObjectService.GetObjectAsync(context.BucketName, blockedObjectKey));
+            await Assert.ThrowsAsync<ObjectNotFoundException>(() => childObjectService.GetObjectAsync(context.BucketName, blockedObjectKey));
         }
         finally
         {
