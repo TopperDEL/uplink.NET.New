@@ -218,7 +218,6 @@ public class Access : IDisposable
     /// <summary>Revoke a child access grant that was derived from this access grant.</summary>
     public async Task RevokeAsync(Access childAccess)
     {
-        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(childAccess);
         using var childAccessLease = childAccess.AcquireAccessLease();
         using var projectLease = AcquireProjectLease();
@@ -374,10 +373,6 @@ public class Access : IDisposable
         lock (_lifetimeSync)
         {
             ThrowIfDisposedNoLock();
-
-            if (_accessHandle == nint.Zero)
-                throw new ObjectDisposedException(nameof(Access));
-
             _activeAccessLeases++;
             return new AccessHandleLease(this, _accessHandle);
         }

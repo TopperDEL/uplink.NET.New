@@ -196,15 +196,18 @@ public class AccessGrantTests
 
             var serializedParentSharedAccess = parentSharedAccess.Serialize();
             var serializedChildSharedAccess = childSharedAccess.Serialize();
+            var parentSharedObjectService = new ObjectService(parentSharedAccess);
+            var childSharedObjectService = new ObjectService(childSharedAccess);
 
-            Assert.Equal(objectKey, (await new ObjectService(parentSharedAccess).GetObjectAsync(context.BucketName, objectKey)).Key);
-            Assert.Equal(objectKey, (await new ObjectService(childSharedAccess).GetObjectAsync(context.BucketName, objectKey)).Key);
+            Assert.Equal(objectKey, (await parentSharedObjectService.GetObjectAsync(context.BucketName, objectKey)).Key);
+            Assert.Equal(objectKey, (await childSharedObjectService.GetObjectAsync(context.BucketName, objectKey)).Key);
 
             await parentSharedAccess.RevokeAsync(childSharedAccess);
 
-            Assert.Equal(objectKey, (await new ObjectService(parentSharedAccess).GetObjectAsync(context.BucketName, objectKey)).Key);
+            Assert.Equal(objectKey, (await parentSharedObjectService.GetObjectAsync(context.BucketName, objectKey)).Key);
             using var reparsedParentSharedAccess = new Access(serializedParentSharedAccess);
-            Assert.Equal(objectKey, (await new ObjectService(reparsedParentSharedAccess).GetObjectAsync(context.BucketName, objectKey)).Key);
+            var reparsedParentSharedObjectService = new ObjectService(reparsedParentSharedAccess);
+            Assert.Equal(objectKey, (await reparsedParentSharedObjectService.GetObjectAsync(context.BucketName, objectKey)).Key);
 
             await AssertRevokedAsync(serializedChildSharedAccess, context.BucketName, objectKey);
         }
