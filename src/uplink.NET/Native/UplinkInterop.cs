@@ -38,6 +38,7 @@ internal static unsafe partial class UplinkInterop
         public byte allow_upload;
         public byte allow_list;
         public byte allow_delete;
+        private int _padding; // align to int64_t
         public long not_before; // int64_t unix timestamp, 0 = disabled
         public long not_after;  // int64_t unix timestamp, 0 = disabled
     }
@@ -111,6 +112,7 @@ internal static unsafe partial class UplinkInterop
     internal struct UplinkPart
     {
         public uint  part_number;
+        private uint _padding; // align to size_t
         public nuint size;
         public long  modified;
         public nint  etag;        // char*
