@@ -193,10 +193,15 @@ jobs:
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
           # Opt in to the disposal-race stress suite (DisposeStressTests).
           UPLINK_RUN_STRESS: '1'
-          # GOTRACEBACK=crash makes the Go runtime print all goroutine stacks
-          # and abort() on a fatal error — produces a core dump (with ulimit -c)
-          # and a readable goroutine trace on stderr.
-          GOTRACEBACK: crash
+          # GOTRACEBACK=all prints all goroutine stacks on a fatal Go-side
+          # error without calling abort(). Previously we used `crash`, which
+          # ships an abort() that races against CoreCLR's SIGSEGV handler;
+          # abort() reliably wins, which kills the process before
+          # DOTNET_DbgEnableMiniDump can write the managed minidump we actually
+          # want. With `all` the Go side prints goroutine stacks to stderr
+          # and unwinds, letting CoreCLR capture its minidump. If the process
+          # really can't continue we still get a kernel core via core_pattern.
+          GOTRACEBACK: all
           GODEBUG: 'cgocheck=1,invalidptr=1,clobberfree=1'
           # .NET in-process minidumps for managed-side crashes.
           DOTNET_DbgEnableMiniDump: '1'
@@ -217,15 +222,66 @@ jobs:
             --blame-hang-timeout 10m \
             --diag:"${{ github.workspace }}/TestResults/diag/vstest.log"
 
-      - name: Symbolize core dumps
+      - name: Analyze dumps with dotnet-dump (managed stacks)
         if: ${{ always() && steps.run_tests.outcome != 'success' }}
         shell: bash
         run: |
+          # dotnet-dump analyze can read either CoreCLR's managed minidumps
+          # (written via DOTNET_DbgEnableMiniDump) OR a kernel ELF core of
+          # a .NET process, and it resolves JIT-compiled frames to managed
+          # method names — which plain gdb cannot. That gets us actual C#
+          # stacks including the method that crashed.
+          shopt -s nullglob
+          dotnet tool install -g dotnet-dump >/dev/null
+          export PATH="$HOME/.dotnet/tools:$PATH"
+
+          dumps=( "$CI_COREDUMP_DIR"/core.* "$CI_COREDUMP_DIR"/managed-coredump.* )
+          mapfile -t blame_dumps < <(find "${{ github.workspace }}/TestResults" -maxdepth 4 -type f -name '*.dmp' 2>/dev/null)
+          dumps+=( "${blame_dumps[@]}" )
+
+          if [[ ${#dumps[@]} -eq 0 ]]; then
+            echo "No dumps were captured."
+            exit 0
+          fi
+
+          # Script of SOS commands executed inside dotnet-dump's REPL.
+          analyze_cmds=$(cat <<'EOF'
+          threads
+          clrstack -all -f
+          syncblk
+          pe
+          dso
+          dumpheap -stat -type uplink.NET.Models.Access
+          dumpheap -stat -type uplink.NET.Models.UploadOperation
+          dumpheap -stat -type uplink.NET.Models.DownloadOperation
+          exit
+          EOF
+          )
+
+          for dump in "${dumps[@]}"; do
+            [[ -f "$dump" ]] || continue
+            echo
+            echo "::group::dotnet-dump analyze $(basename "$dump") ($(stat -c%s "$dump") bytes)"
+            # Pipe the command script into analyze; --no-xxx flags don't
+            # exist here, we just feed stdin and let it exit on EOF.
+            printf '%s\n' "$analyze_cmds" \
+              | dotnet-dump analyze "$dump" 2>&1 \
+              | sed 's/^/  /' || true
+            echo "::endgroup::"
+          done
+
+      - name: Symbolize core dumps (native frames)
+        if: ${{ always() && steps.run_tests.outcome != 'success' }}
+        shell: bash
+        run: |
+          # gdb sees native frames but cannot name JIT-compiled .NET methods.
+          # Kept as a complement to dotnet-dump analyze: gdb surfaces Go
+          # goroutine state (runtime.park_m, uplink_* cgo frames) that SOS
+          # cannot show. Use both, read both.
           shopt -s nullglob
           dotnet_path="$(which dotnet)"
           echo "dotnet binary: $dotnet_path"
           dumps=( "$CI_COREDUMP_DIR"/core.* "$CI_COREDUMP_DIR"/managed-coredump.* )
-          # Also pick up anything Blame's collector dropped under TestResults.
           mapfile -t blame_dumps < <(find "${{ github.workspace }}/TestResults" -maxdepth 4 -type f -name '*.dmp' 2>/dev/null)
           dumps+=( "${blame_dumps[@]}" )
           if [[ ${#dumps[@]} -eq 0 ]]; then
@@ -235,12 +291,14 @@ jobs:
           for dump in "${dumps[@]}"; do
             [[ -f "$dump" ]] || continue
             echo
-            echo "===== $dump ($(stat -c%s "$dump") bytes) ====="
+            echo "::group::gdb thread-apply-all-bt $(basename "$dump")"
             gdb -batch -nx \
+                -ex "set auto-load safe-path /" \
                 -ex "set pagination off" \
                 -ex "thread apply all bt" \
                 -ex "quit" \
                 "$dotnet_path" "$dump" 2>&1 | sed 's/^/  /' || true
+            echo "::endgroup::"
           done
 
       - name: Upload test results
@@ -444,7 +502,8 @@ jobs:
           #   history_size=7 expands the per-goroutine history buffer for
           #                  longer call chains (default 1)
           GORACE: log_path=${{ github.workspace }}/TestResults/race-logs/race halt_on_error=0 history_size=7
-          GOTRACEBACK: crash
+          # See build-and-test-linux for why `all` instead of `crash`.
+          GOTRACEBACK: all
           GODEBUG: 'cgocheck=1,invalidptr=1,clobberfree=1'
           DOTNET_DbgEnableMiniDump: '1'
           DOTNET_DbgMiniDumpType: '4'
@@ -484,7 +543,48 @@ jobs:
           done
           echo "::endgroup::"
 
-      - name: Symbolize core dumps
+      - name: Analyze dumps with dotnet-dump (managed stacks)
+        if: ${{ always() && steps.run_tests.outcome != 'success' }}
+        shell: bash
+        run: |
+          # See build-and-test-linux for why we run both dotnet-dump and gdb.
+          shopt -s nullglob
+          dotnet tool install -g dotnet-dump >/dev/null
+          export PATH="$HOME/.dotnet/tools:$PATH"
+
+          dumps=( "$CI_COREDUMP_DIR"/core.* "$CI_COREDUMP_DIR"/managed-coredump.* )
+          mapfile -t blame_dumps < <(find "${{ github.workspace }}/TestResults" -maxdepth 4 -type f -name '*.dmp' 2>/dev/null)
+          dumps+=( "${blame_dumps[@]}" )
+
+          if [[ ${#dumps[@]} -eq 0 ]]; then
+            echo "No dumps were captured."
+            exit 0
+          fi
+
+          analyze_cmds=$(cat <<'EOF'
+          threads
+          clrstack -all -f
+          syncblk
+          pe
+          dso
+          dumpheap -stat -type uplink.NET.Models.Access
+          dumpheap -stat -type uplink.NET.Models.UploadOperation
+          dumpheap -stat -type uplink.NET.Models.DownloadOperation
+          exit
+          EOF
+          )
+
+          for dump in "${dumps[@]}"; do
+            [[ -f "$dump" ]] || continue
+            echo
+            echo "::group::dotnet-dump analyze $(basename "$dump") ($(stat -c%s "$dump") bytes)"
+            printf '%s\n' "$analyze_cmds" \
+              | dotnet-dump analyze "$dump" 2>&1 \
+              | sed 's/^/  /' || true
+            echo "::endgroup::"
+          done
+
+      - name: Symbolize core dumps (native frames)
         if: ${{ always() && steps.run_tests.outcome != 'success' }}
         shell: bash
         run: |
@@ -500,12 +600,14 @@ jobs:
           for dump in "${dumps[@]}"; do
             [[ -f "$dump" ]] || continue
             echo
-            echo "===== $dump ($(stat -c%s "$dump") bytes) ====="
+            echo "::group::gdb thread-apply-all-bt $(basename "$dump")"
             gdb -batch -nx \
+                -ex "set auto-load safe-path /" \
                 -ex "set pagination off" \
                 -ex "thread apply all bt" \
                 -ex "quit" \
                 "$dotnet_path" "$dump" 2>&1 | sed 's/^/  /' || true
+            echo "::endgroup::"
           done
 
       - name: Upload race detector reports
@@ -605,10 +707,11 @@ jobs:
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
           UPLINK_RUN_STRESS: '1'
-          # GOTRACEBACK=crash makes the Go runtime print all goroutine stacks
-          # and abort() on a fatal error. On Windows this produces a Watson
-          # minidump via WER in addition to the Go traceback on stderr.
-          GOTRACEBACK: crash
+          # GOTRACEBACK=all prints all goroutine stacks on a fatal Go-side
+          # error without calling abort(). See build-and-test-linux for why
+          # `all` instead of `crash` — we want CoreCLR's minidump writer to
+          # win, not lose the race to Go's abort().
+          GOTRACEBACK: all
           GODEBUG: 'cgocheck=1,invalidptr=1,clobberfree=1'
           DOTNET_DbgEnableMiniDump: '1'
           DOTNET_DbgMiniDumpType: '4'
