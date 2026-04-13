@@ -51,7 +51,7 @@ public class AccessGrantTests
             var allowedObject = await reparsedObjectService.GetObjectAsync(context.BucketName, allowedObjectKey);
             Assert.Equal(allowedObjectKey, allowedObject.Key);
 
-            await Assert.ThrowsAnyAsync<Exception>(() => reparsedObjectService.GetObjectAsync(context.BucketName, blockedObjectKey));
+            await Assert.ThrowsAsync<ObjectNotFoundException>(() => reparsedObjectService.GetObjectAsync(context.BucketName, blockedObjectKey));
         }
         finally
         {
@@ -112,13 +112,108 @@ public class AccessGrantTests
         }
         finally
         {
-            try
-            {
-                await objectService.DeleteObjectAsync(context.BucketName, objectKey);
-            }
-            catch (ObjectNotFoundException)
-            {
-            }
+            await StorjTestHelper.DeleteObjectIfPresentAsync(objectService, context.BucketName, objectKey);
+        }
+    }
+
+    [StorjIntegrationFact]
+    public async Task Share_creates_nested_subaccess_limited_to_deeper_prefix()
+    {
+        using var context = IntegrationTestEnvironment.CreateContext();
+        var bucketService = new BucketService(context.Access);
+        var objectService = new ObjectService(context.Access);
+        var parentPrefix = $"integration-tests/share-nested/{Guid.NewGuid():N}/";
+        var childPrefix = $"{parentPrefix}child/";
+        var allowedObjectKey = $"{childPrefix}allowed.txt";
+        var blockedObjectKey = $"{parentPrefix}blocked.txt";
+        var payload = System.Text.Encoding.UTF8.GetBytes("nested shared access payload");
+
+        try
+        {
+            await bucketService.EnsureBucketAsync(context.BucketName);
+            await StorjTestHelper.UploadBytesAsync(objectService, context.BucketName, allowedObjectKey, payload);
+            await StorjTestHelper.UploadBytesAsync(objectService, context.BucketName, blockedObjectKey, payload);
+
+            using var parentSharedAccess = context.Access.Share(
+                new Permission
+                {
+                    AllowDownload = true
+                },
+                new SharePrefix { Bucket = context.BucketName, Prefix = parentPrefix });
+            using var childSharedAccess = parentSharedAccess.Share(
+                new Permission
+                {
+                    AllowDownload = true
+                },
+                new SharePrefix { Bucket = context.BucketName, Prefix = childPrefix });
+
+            var serializedChildAccess = childSharedAccess.Serialize();
+            Assert.False(string.IsNullOrWhiteSpace(serializedChildAccess));
+
+            using var reparsedChildAccess = new Access(serializedChildAccess);
+            var childObjectService = new ObjectService(reparsedChildAccess);
+
+            var allowedObject = await childObjectService.GetObjectAsync(context.BucketName, allowedObjectKey);
+            Assert.Equal(allowedObjectKey, allowedObject.Key);
+
+            await Assert.ThrowsAsync<ObjectNotFoundException>(() => childObjectService.GetObjectAsync(context.BucketName, blockedObjectKey));
+        }
+        finally
+        {
+            await StorjTestHelper.DeleteObjectIfPresentAsync(objectService, context.BucketName, allowedObjectKey);
+            await StorjTestHelper.DeleteObjectIfPresentAsync(objectService, context.BucketName, blockedObjectKey);
+        }
+    }
+
+    [StorjIntegrationFact]
+    public async Task RevokeAsync_on_subaccess_revokes_only_its_descendant()
+    {
+        using var context = IntegrationTestEnvironment.CreateContext();
+        var bucketService = new BucketService(context.Access);
+        var objectService = new ObjectService(context.Access);
+        var parentPrefix = $"integration-tests/revoke-nested/{Guid.NewGuid():N}/";
+        var childPrefix = $"{parentPrefix}child/";
+        var objectKey = $"{childPrefix}revoked.txt";
+        var payload = System.Text.Encoding.UTF8.GetBytes("nested revocation payload");
+
+        try
+        {
+            await bucketService.EnsureBucketAsync(context.BucketName);
+            await StorjTestHelper.UploadBytesAsync(objectService, context.BucketName, objectKey, payload);
+
+            using var parentSharedAccess = context.Access.Share(
+                new Permission
+                {
+                    AllowDownload = true
+                },
+                new SharePrefix { Bucket = context.BucketName, Prefix = parentPrefix });
+            using var childSharedAccess = parentSharedAccess.Share(
+                new Permission
+                {
+                    AllowDownload = true
+                },
+                new SharePrefix { Bucket = context.BucketName, Prefix = childPrefix });
+
+            var serializedParentSharedAccess = parentSharedAccess.Serialize();
+            var serializedChildSharedAccess = childSharedAccess.Serialize();
+            var parentSharedObjectService = new ObjectService(parentSharedAccess);
+            var childSharedObjectService = new ObjectService(childSharedAccess);
+
+            Assert.Equal(objectKey, (await parentSharedObjectService.GetObjectAsync(context.BucketName, objectKey)).Key);
+            Assert.Equal(objectKey, (await childSharedObjectService.GetObjectAsync(context.BucketName, objectKey)).Key);
+
+            await parentSharedAccess.RevokeAsync(childSharedAccess);
+
+            Assert.Equal(objectKey, (await parentSharedObjectService.GetObjectAsync(context.BucketName, objectKey)).Key);
+            using var reparsedParentSharedAccess = new Access(serializedParentSharedAccess);
+            var reparsedParentSharedObjectService = new ObjectService(reparsedParentSharedAccess);
+            Assert.Equal(objectKey, (await reparsedParentSharedObjectService.GetObjectAsync(context.BucketName, objectKey)).Key);
+
+            await AssertRevokedAsync(serializedChildSharedAccess, context.BucketName, objectKey);
+        }
+        finally
+        {
+            await StorjTestHelper.DeleteObjectIfPresentAsync(objectService, context.BucketName, objectKey);
         }
     }
 
