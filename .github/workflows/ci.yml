@@ -85,6 +85,30 @@ jobs:
           cp "$HOME/uplink-c/.build/libuplink.so" "$target/libstorj_uplink.so"
           ls -lh "$target/"
 
+      - name: Validate native struct layouts
+        shell: bash
+        run: |
+          # Compile the introspector against the uplink-c headers we just
+          # cloned and run it to emit an authoritative CSV of every struct's
+          # size and field offsets. The NativeStructLayoutTests xunit test
+          # reads this file at test time and compares to Marshal.SizeOf /
+          # Marshal.OffsetOf on the matching C# struct. A layout divergence
+          # silently corrupts memory across every P/Invoke that touches the
+          # struct — catching it here is orders of magnitude cheaper than
+          # chasing it from a core dump.
+          #
+          # -DUPLINK_DISABLE_NAMESPACE_COMPAT silences the compatibility-defines
+          # warning from uplink_compat.h; we don't use those legacy symbols.
+          layout_out="$GITHUB_WORKSPACE/TestResults/native-struct-layout.csv"
+          mkdir -p "$(dirname "$layout_out")"
+          cc -I "$HOME/uplink-c" -DUPLINK_DISABLE_NAMESPACE_COMPAT \
+              scripts/ci/struct_layout_check.c \
+              -o /tmp/struct_layout_check
+          /tmp/struct_layout_check > "$layout_out"
+          echo "UPLINK_NATIVE_STRUCT_LAYOUT=$layout_out" >> "$GITHUB_ENV"
+          echo "Wrote $(wc -l < "$layout_out") lines to $layout_out"
+          head -5 "$layout_out"
+
       - name: Restore
         run: dotnet restore uplink.NET.sln
 

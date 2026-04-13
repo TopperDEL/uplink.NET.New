@@ -58,5 +58,11 @@
       <_Parameter1>StorjUplinkVersion</_Parameter1>
       <_Parameter2>$(StorjUplinkVersion)</_Parameter2>
     </AssemblyAttribute>
+    <!--
+      Let the integration test project see the P/Invoke struct definitions
+      in UplinkInterop so it can validate their layouts against the native
+      C headers via Marshal.SizeOf / Marshal.OffsetOf.
+    -->
+    <InternalsVisibleTo Include="uplink.NET.IntegrationTests" />
   </ItemGroup>
 </Project>
