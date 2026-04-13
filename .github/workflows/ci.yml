@@ -115,7 +115,18 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$CI_DIAGNOSTICS_DIR"
+          mkdir -p TestResults/diag TestResults/coredumps
           echo "uplink.NET diagnostics logs will be written to: $CI_DIAGNOSTICS_DIR"
+
+      - name: Enable core dumps
+        shell: bash
+        run: |
+          ulimit -c unlimited
+          sudo mkdir -p /tmp/cores
+          sudo chmod 1777 /tmp/cores
+          echo '/tmp/cores/core.%e.%p.%t' | sudo tee /proc/sys/kernel/core_pattern
+          sudo sysctl -w kernel.core_uses_pid=1
+          cat /proc/sys/kernel/core_pattern
 
       - name: Run test suite
         id: run_tests
@@ -125,7 +136,33 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
-        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests"
+          DOTNET_DbgEnableMiniDump: '1'
+          DOTNET_DbgMiniDumpType: '4'
+          DOTNET_DbgMiniDumpName: ${{ github.workspace }}/TestResults/coredumps/coredump.%d.%t
+          COMPlus_EnableDiagnostics: '1'
+          UPLINK_DEBUG: '1'
+          GODEBUG: 'cgocheck=2,invalidptr=1,clobberfree=1'
+          MALLOC_CHECK_: '3'
+        run: |
+          dotnet test uplink.NET.sln -c Release --no-build \
+            --settings xunit.serial.runsettings \
+            --results-directory TestResults \
+            --logger "trx;LogFilePrefix=linux-integration-tests-serial" \
+            --blame-crash --blame-crash-dump-type full \
+            --blame-hang-timeout 10m \
+            --diag:TestResults/diag/vstest-serial.log
+
+      - name: Symbolize core dumps
+        if: ${{ always() && steps.run_tests.outcome != 'success' }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb
+          find /tmp/cores TestResults -type f \( -name 'core.*' -o -name '*.dmp' \) -print0 |
+            while IFS= read -r -d '' core; do
+              echo "=== $core ==="
+              gdb -batch -ex "thread apply all bt" -ex "quit" "$(which dotnet)" "$core" || true
+            done
 
       - name: Upload test results
         if: ${{ always() }}
@@ -135,6 +172,7 @@ jobs:
           path: |
             TestResults/
             ${{ env.CI_DIAGNOSTICS_DIR }}/
+            /tmp/cores/
           if-no-files-found: warn
 
       - name: Upload diagnostics logs
