@@ -146,24 +146,38 @@ jobs:
           # kernel core is still written alongside it for defence in depth.
           sudo tee /usr/local/bin/uplink-coredump-helper >/dev/null <<'HELPER'
           #!/usr/bin/env bash
-          # Called by the kernel on a crash. Args: %e %p %t (exe pid time).
+          # Called by the kernel on a crash. Invoked as:
+          #   /usr/local/bin/uplink-coredump-helper <pid> <ts> <exe>...
+          # where <exe> can contain spaces because core_pattern's %e resolves
+          # to the thread's prctl(PR_SET_NAME) — e.g. ".NET TP Worker" for
+          # .NET threadpool threads. Putting %p first lets us parse pid/ts
+          # robustly regardless of how many tokens the exe field splits into.
           # Kernel streams the ELF core on stdin.
           set +e
-          exe=$1 ; pid=$2 ; ts=$3
+          pid=$1
+          ts=$2
+          shift 2
+          exe_name="$*"
           out_dir="__CI_COREDUMP_DIR__"
           mkdir -p "$out_dir"
-          base="$out_dir/core.$exe.$pid.$ts"
+          safe_name="${exe_name// /_}"
+          base="$out_dir/core.${safe_name}.${pid}.${ts}"
 
           # 1. Persist the raw kernel core from stdin.
           cat >"$base" 2>/dev/null
 
-          # 2. If this was a .NET process, ask createdump for a managed
-          #    minidump while the kernel still holds the process live. The
-          #    binary lives next to libcoreclr.so.
-          createdump_bin="$(ls /usr/share/dotnet/shared/Microsoft.NETCore.App/10.*/createdump 2>/dev/null | sort -V | tail -1)"
-          if [[ -n "$createdump_bin" && "$exe" == *dotnet* ]]; then
-              "$createdump_bin" --full --name "$out_dir/managed-coredump.$pid" "$pid" \
-                  >"$out_dir/createdump.$pid.log" 2>&1
+          # 2. Invoke CoreCLR's createdump on the still-live pid. The kernel
+          #    keeps the crashing process in a dumpable-zombie state until
+          #    this helper exits, so createdump can ptrace-attach and emit a
+          #    proper managed minidump. We try unconditionally: createdump
+          #    fails fast on non-.NET processes, so the no-op path is cheap.
+          createdump_bin=$(ls /usr/share/dotnet/shared/Microsoft.NETCore.App/10.*/createdump 2>/dev/null | sort -V | tail -1)
+          if [[ -n "$createdump_bin" ]]; then
+              "$createdump_bin" --full \
+                  --name "$out_dir/managed-coredump.${pid}" \
+                  "$pid" >"$out_dir/createdump.${pid}.log" 2>&1
+              echo "createdump exit: $? (see createdump.${pid}.log)" \
+                  >>"$out_dir/createdump.${pid}.log"
           fi
           HELPER
           sudo sed -i "s|__CI_COREDUMP_DIR__|${CI_COREDUMP_DIR}|" /usr/local/bin/uplink-coredump-helper
@@ -171,8 +185,9 @@ jobs:
 
           # Point core_pattern at the helper. The leading `|` tells the
           # kernel to pipe the core to this program's stdin instead of
-          # writing it to a file.
-          echo "|/usr/local/bin/uplink-coredump-helper %e %p %t" \
+          # writing it to a file. %p first so pid/ts parse cleanly even
+          # when %e has spaces (thread names like ".NET TP Worker").
+          echo "|/usr/local/bin/uplink-coredump-helper %p %t %e" \
               | sudo tee /proc/sys/kernel/core_pattern
           sudo sysctl -w kernel.core_uses_pid=1
           # core_uses_pid has no effect once core_pattern uses a pipe but
