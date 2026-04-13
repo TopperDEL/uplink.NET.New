@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <xUnit>
+    <ParallelizeTestCollections>false</ParallelizeTestCollections>
+    <MaxParallelThreads>1</MaxParallelThreads>
+  </xUnit>
+</RunSettings>
