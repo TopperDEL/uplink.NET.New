@@ -208,8 +208,19 @@ jobs:
             exit 0
           fi
 
+          # Locate the CoreCLR runtime so SOS can find libmscordaccore.so.
+          # Without setclrpath, dotnet-dump analyze on a kernel ELF core fails
+          # with "Failed to load data access module, 0x80004002" — it can't
+          # auto-discover the runtime path the way it can from a CoreCLR-
+          # authored minidump.
+          CLR_RUNTIME_DIR="$(ls -d /usr/share/dotnet/shared/Microsoft.NETCore.App/10.*/ 2>/dev/null | sort -V | tail -1)"
+          echo "CLR runtime dir: $CLR_RUNTIME_DIR"
+
           # Script of SOS commands executed inside dotnet-dump's REPL.
-          analyze_cmds=$(cat <<'EOF'
+          # Note: single-quoted heredoc would block ${CLR_RUNTIME_DIR}
+          # expansion; we interpolate it here on purpose.
+          analyze_cmds=$(cat <<EOF
+          setclrpath ${CLR_RUNTIME_DIR}
           threads
           clrstack -all -f
           syncblk
@@ -226,8 +237,6 @@ jobs:
             [[ -f "$dump" ]] || continue
             echo
             echo "::group::dotnet-dump analyze $(basename "$dump") ($(stat -c%s "$dump") bytes)"
-            # Pipe the command script into analyze; --no-xxx flags don't
-            # exist here, we just feed stdin and let it exit on EOF.
             printf '%s\n' "$analyze_cmds" \
               | dotnet-dump analyze "$dump" 2>&1 \
               | sed 's/^/  /' || true
