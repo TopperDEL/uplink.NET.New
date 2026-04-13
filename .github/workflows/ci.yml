@@ -83,6 +83,16 @@ jobs:
           target="$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native"
           mkdir -p "$target"
           cp "$HOME/uplink-c/.build/libuplink.so" "$target/libstorj_uplink.so"
+
+          # Build the sigaltstack-fix shim. See docs/crash-investigation.md.
+          # This is tested via SigStackFix.EnsureOnCurrentThread() from
+          # Access.cs; the shim itself is a dozen lines of C that install
+          # a 1 MB alt stack per thread to prevent CoreCLR's SIGSEGV
+          # handler from overflowing Go's small (~32 KB) alt stack.
+          cc -O2 -fPIC -shared \
+            -o "$target/libuplink_sigstack_fix.so" \
+            "$GITHUB_WORKSPACE/scripts/ci/sigstack_fix.c"
+
           ls -lh "$target/"
 
       - name: Validate native struct layouts

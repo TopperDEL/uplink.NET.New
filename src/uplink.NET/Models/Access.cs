@@ -32,6 +32,11 @@ public class Access : IDisposable
         if (string.IsNullOrWhiteSpace(accessGrant))
             throw new ArgumentNullException(nameof(accessGrant));
 
+        // Install a large sigaltstack on this thread before the first
+        // cgo call. Prevents the CoreCLR-handler-overflow SIGSEGV that
+        // docs/crash-investigation.md describes.
+        SigStackFix.EnsureOnCurrentThread();
+
         _config = CloneConfig(config);
         _diagnostics = CreateDiagnosticsSession(_config);
 
@@ -370,6 +375,10 @@ public class Access : IDisposable
 
     internal AccessHandleLease AcquireAccessLease()
     {
+        // Any thread reaching here is about to (or has just) entered
+        // cgo into libstorj_uplink.so. Ensure it has a large sigaltstack.
+        SigStackFix.EnsureOnCurrentThread();
+
         lock (_lifetimeSync)
         {
             ThrowIfDisposedNoLock();
@@ -380,6 +389,11 @@ public class Access : IDisposable
 
     internal ProjectHandleLease AcquireProjectLease()
     {
+        // Ensure a large sigaltstack before the cgo call to open a new
+        // project below — and for any subsequent cgo work on this thread
+        // that runs behind the returned lease. Idempotent per thread.
+        SigStackFix.EnsureOnCurrentThread();
+
         lock (_lifetimeSync)
         {
             ThrowIfDisposedNoLock();
