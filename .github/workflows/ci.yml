@@ -641,30 +641,36 @@ jobs:
           TSAN_OPTIONS: >-
             handle_segv=0 handle_sigill=0 handle_sigfpe=0 handle_sigbus=0
             exitcode=0 verbosity=1
-          # LD_PRELOAD forces the race-instrumented .so (and its embedded
-          # TSan runtime) to be resident before CoreCLR begins. If we let
-          # dlopen pull it in during the first P/Invoke, TSan's fixed
-          # shadow mapping collides with CoreCLR's reserved ranges and
-          # init fails with "ThreadSanitizer failed to allocate ...".
-          LD_PRELOAD: ${{ github.workspace }}/native/linux-x64-race/libstorj_uplink.so
+          # NOTE: LD_PRELOAD is deliberately NOT in the step env block.
+          # Putting it there applies to the bash shell that runs this
+          # script — and a previous run (job 71133590033) died silently
+          # before any script line executed, almost certainly because
+          # TSan initialized inside the bash process (not a CoreCLR
+          # host) and aborted it. We set LD_PRELOAD inline on the
+          # dotnet invocation so only dotnet + its children inherit it.
         run: |
-          # Don't use `set -e`: if `dotnet test` exits non-zero we still
-          # want the stderr we captured, plus any TSan output already
-          # written. Previous run logged nothing between the env block
-          # and the exit-code line because `bash -e` terminated early.
           set +e
-          dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
-            --results-directory "${{ github.workspace }}/TestResults-race" \
-            --logger "trx;LogFilePrefix=linux-race-integration-tests" \
-            --blame \
-            --blame-hang-timeout 15m \
-            --diag:"${{ github.workspace }}/TestResults-race/diag/vstest.log" \
-            2>&1 | tee "${{ github.workspace }}/TestResults-race/dotnet-test.log"
+          echo "### race-detector test step starting"
+          echo "workspace: ${{ github.workspace }}"
+          ls -lh "${{ github.workspace }}/native/linux-x64-race/libstorj_uplink.so" \
+            || { echo "race .so missing"; exit 0; }
+          mkdir -p "${{ github.workspace }}/TestResults-race/diag"
+
+          echo "### invoking dotnet test with LD_PRELOAD"
+          LD_PRELOAD="${{ github.workspace }}/native/linux-x64-race/libstorj_uplink.so" \
+            dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
+              --results-directory "${{ github.workspace }}/TestResults-race" \
+              --logger "trx;LogFilePrefix=linux-race-integration-tests" \
+              --blame \
+              --blame-hang-timeout 15m \
+              --diag:"${{ github.workspace }}/TestResults-race/diag/vstest.log" \
+              2>&1 | tee "${{ github.workspace }}/TestResults-race/dotnet-test.log"
           rc=${PIPESTATUS[0]}
-          echo "dotnet test exit code: $rc"
-          # Keep the step green — the job is marked continue-on-error and
-          # we want the subsequent Summarize and Upload steps to always
-          # run so diagnostic output reaches the artifact.
+          echo "### dotnet test exit code: $rc"
+          echo "### log tail:"
+          tail -40 "${{ github.workspace }}/TestResults-race/dotnet-test.log" 2>/dev/null || true
+          # Always exit 0 so downstream Summarize + Upload steps run even
+          # when dotnet test fails (the job is continue-on-error anyway).
           exit 0
 
       - name: Summarize race reports
