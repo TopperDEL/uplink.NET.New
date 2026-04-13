@@ -77,6 +77,7 @@ jobs:
       - build-native-linux
     env:
       CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/TestResults/diagnostics
+      CI_COREDUMP_DIR: ${{ github.workspace }}/TestResults/coredumps
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -114,8 +115,25 @@ jobs:
       - name: Prepare diagnostics logging
         shell: bash
         run: |
-          mkdir -p "$CI_DIAGNOSTICS_DIR"
+          mkdir -p "$CI_DIAGNOSTICS_DIR" "$CI_COREDUMP_DIR"
           echo "uplink.NET diagnostics logs will be written to: $CI_DIAGNOSTICS_DIR"
+          echo "core dumps will be written to: $CI_COREDUMP_DIR"
+
+      - name: Enable native core dumps
+        shell: bash
+        run: |
+          # gdb is needed for the post-crash backtrace step.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdb
+          # Override core_pattern so dumps land in our artifacts dir with a
+          # predictable name. ubuntu-latest runners ship with apport piping
+          # cores away by default.
+          sudo mkdir -p "$CI_COREDUMP_DIR"
+          sudo chmod 1777 "$CI_COREDUMP_DIR"
+          echo "${CI_COREDUMP_DIR}/core.%e.%p.%t" | sudo tee /proc/sys/kernel/core_pattern
+          sudo sysctl -w kernel.core_uses_pid=1
+          ulimit -c unlimited
+          echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
 
       - name: Run test suite
         id: run_tests
@@ -125,7 +143,55 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
-        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests"
+          # GOTRACEBACK=crash makes the Go runtime print all goroutine stacks
+          # and abort() on a fatal error — produces a core dump (with ulimit -c)
+          # and a readable goroutine trace on stderr.
+          GOTRACEBACK: crash
+          GODEBUG: 'cgocheck=1,invalidptr=1,clobberfree=1'
+          # .NET in-process minidumps for managed-side crashes.
+          DOTNET_DbgEnableMiniDump: '1'
+          DOTNET_DbgMiniDumpType: '4'
+          DOTNET_DbgMiniDumpName: ${{ github.workspace }}/TestResults/coredumps/managed-coredump.%p
+          COMPlus_DbgEnableMiniDump: '1'
+          COMPlus_DbgMiniDumpType: '4'
+          COMPlus_DbgMiniDumpName: ${{ github.workspace }}/TestResults/coredumps/managed-coredump.%p
+        # cd into the coredump dir so cores written with relative names land
+        # there. The test command itself uses absolute paths.
+        run: |
+          ulimit -c unlimited
+          cd "$CI_COREDUMP_DIR"
+          dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
+            --results-directory "${{ github.workspace }}/TestResults" \
+            --logger "trx;LogFilePrefix=linux-integration-tests" \
+            --blame-crash --blame-crash-dump-type full \
+            --blame-hang-timeout 10m \
+            --diag:"${{ github.workspace }}/TestResults/diag/vstest.log"
+
+      - name: Symbolize core dumps
+        if: ${{ always() && steps.run_tests.outcome != 'success' }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          dotnet_path="$(which dotnet)"
+          echo "dotnet binary: $dotnet_path"
+          dumps=( "$CI_COREDUMP_DIR"/core.* "$CI_COREDUMP_DIR"/managed-coredump.* )
+          # Also pick up anything Blame's collector dropped under TestResults.
+          mapfile -t blame_dumps < <(find "${{ github.workspace }}/TestResults" -maxdepth 4 -type f -name '*.dmp' 2>/dev/null)
+          dumps+=( "${blame_dumps[@]}" )
+          if [[ ${#dumps[@]} -eq 0 ]]; then
+            echo "No core or managed dumps were captured."
+            exit 0
+          fi
+          for dump in "${dumps[@]}"; do
+            [[ -f "$dump" ]] || continue
+            echo
+            echo "===== $dump ($(stat -c%s "$dump") bytes) ====="
+            gdb -batch -nx \
+                -ex "set pagination off" \
+                -ex "thread apply all bt" \
+                -ex "quit" \
+                "$dotnet_path" "$dump" 2>&1 | sed 's/^/  /' || true
+          done
 
       - name: Upload test results
         if: ${{ always() }}
@@ -135,6 +201,7 @@ jobs:
           path: |
             TestResults/
             ${{ env.CI_DIAGNOSTICS_DIR }}/
+            ${{ env.CI_COREDUMP_DIR }}/
           if-no-files-found: warn
 
       - name: Upload diagnostics logs
@@ -143,6 +210,14 @@ jobs:
         with:
           name: ci-diagnostics-logs-linux
           path: ${{ env.CI_DIAGNOSTICS_DIR }}/
+          if-no-files-found: warn
+
+      - name: Upload core dumps
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-coredumps-linux
+          path: ${{ env.CI_COREDUMP_DIR }}/
           if-no-files-found: warn
 
       - name: Summarize test results
@@ -224,7 +299,7 @@ jobs:
               f"| Duration | {duration} |",
               f"| Diagnostics directory | `{diagnostics_dir}` |",
               f"| Diagnostics log files | {len(diagnostics_logs)} |",
-              "| Diagnostics artifacts | `ci-test-results-linux`, `ci-diagnostics-logs-linux` |",
+              "| Diagnostics artifacts | `ci-test-results-linux`, `ci-diagnostics-logs-linux`, `ci-coredumps-linux` |",
           ]
 
           if not trx_files:
@@ -247,6 +322,7 @@ jobs:
       - build-native-windows
     env:
       CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/TestResults/diagnostics
+      CI_COREDUMP_DIR: ${{ github.workspace }}/TestResults/coredumps
       WINDOWS_NATIVE_RUNTIME_DIR: src/uplink.NET/runtimes/win-x64/native
     steps:
       - uses: actions/checkout@v4
@@ -296,7 +372,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path $env:CI_DIAGNOSTICS_DIR | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:CI_COREDUMP_DIR | Out-Null
           Write-Output "uplink.NET diagnostics logs will be written to: $env:CI_DIAGNOSTICS_DIR"
+          Write-Output "crash dumps will be written to: $env:CI_COREDUMP_DIR"
 
       - name: Run test suite
         id: run_tests
@@ -305,7 +383,18 @@ jobs:
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
-        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=windows-integration-tests"
+          # GOTRACEBACK=crash makes the Go runtime print all goroutine stacks
+          # and abort() on a fatal error. On Windows this produces a Watson
+          # minidump via WER in addition to the Go traceback on stderr.
+          GOTRACEBACK: crash
+          GODEBUG: 'cgocheck=1,invalidptr=1,clobberfree=1'
+          DOTNET_DbgEnableMiniDump: '1'
+          DOTNET_DbgMiniDumpType: '4'
+          DOTNET_DbgMiniDumpName: ${{ github.workspace }}\TestResults\coredumps\managed-coredump.%p
+          COMPlus_DbgEnableMiniDump: '1'
+          COMPlus_DbgMiniDumpType: '4'
+          COMPlus_DbgMiniDumpName: ${{ github.workspace }}\TestResults\coredumps\managed-coredump.%p
+        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=windows-integration-tests" --blame-crash --blame-crash-dump-type full --blame-hang-timeout 10m --diag:TestResults/diag/vstest.log
 
       - name: Upload test results
         if: ${{ always() }}
@@ -315,6 +404,7 @@ jobs:
           path: |
             TestResults/
             ${{ env.CI_DIAGNOSTICS_DIR }}/
+            ${{ env.CI_COREDUMP_DIR }}/
           if-no-files-found: warn
 
       - name: Upload diagnostics logs
@@ -323,6 +413,14 @@ jobs:
         with:
           name: ci-diagnostics-logs-windows
           path: ${{ env.CI_DIAGNOSTICS_DIR }}/
+          if-no-files-found: warn
+
+      - name: Upload crash dumps
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-coredumps-windows
+          path: ${{ env.CI_COREDUMP_DIR }}/
           if-no-files-found: warn
 
       - name: Summarize test results
@@ -404,7 +502,7 @@ jobs:
               f"| Duration | {duration} |",
               f"| Diagnostics directory | `{diagnostics_dir}` |",
               f"| Diagnostics log files | {len(diagnostics_logs)} |",
-              "| Diagnostics artifacts | `ci-test-results-windows`, `ci-diagnostics-logs-windows` |",
+              "| Diagnostics artifacts | `ci-test-results-windows`, `ci-diagnostics-logs-windows`, `ci-coredumps-windows` |",
           ]
 
           if not trx_files:
