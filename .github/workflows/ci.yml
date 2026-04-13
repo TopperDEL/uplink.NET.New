@@ -117,28 +117,15 @@ jobs:
           mkdir -p "$CI_DIAGNOSTICS_DIR"
           echo "uplink.NET diagnostics logs will be written to: $CI_DIAGNOSTICS_DIR"
 
-      - name: Run test suite without parallelism
-        id: run_tests_serial
+      - name: Run test suite
+        id: run_tests
         env:
           TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
-        continue-on-error: true
-        run: dotnet test uplink.NET.sln -c Release --no-build --settings xunit.serial.runsettings --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests-serial"
-
-      - name: Run test suite with default parallelism
-        id: run_tests_default
-        if: ${{ always() }}
-        env:
-          TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
-          TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
-          LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
-          UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
-          UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
-        continue-on-error: true
-        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests-default"
+        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests"
 
       - name: Upload test results
         if: ${{ always() }}
@@ -162,8 +149,7 @@ jobs:
         if: ${{ always() }}
         shell: bash
         env:
-          TEST_OUTCOME_SERIAL: ${{ steps.run_tests_serial.outcome }}
-          TEST_OUTCOME_DEFAULT: ${{ steps.run_tests_default.outcome }}
+          TEST_OUTCOME: ${{ steps.run_tests.outcome }}
           DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
         run: |
           python <<'PY'
@@ -174,9 +160,7 @@ jobs:
 
           results_dir = Path("TestResults")
           trx_files = sorted(results_dir.rglob("*.trx"))
-          serial_outcome = os.environ.get("TEST_OUTCOME_SERIAL", "unknown")
-          default_outcome = os.environ.get("TEST_OUTCOME_DEFAULT", "unknown")
-          overall_outcome = "success" if serial_outcome == "success" and default_outcome == "success" else "failure"
+          outcome = os.environ.get("TEST_OUTCOME", "unknown")
           diagnostics_dir = Path(os.environ["DIAGNOSTICS_DIR"])
           diagnostics_logs = sorted(diagnostics_dir.rglob("*.log")) if diagnostics_dir.exists() else []
 
@@ -230,9 +214,7 @@ jobs:
               "",
               "| Metric | Value |",
               "| --- | --- |",
-              f"| Serial run outcome | {serial_outcome} |",
-              f"| Default run outcome | {default_outcome} |",
-              f"| Overall outcome | {overall_outcome} |",
+              f"| Outcome | {outcome} |",
               f"| Test result files | {len(trx_files)} |",
               f"| Total | {totals['total']} |",
               f"| Executed | {totals['executed']} |",
@@ -257,14 +239,6 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write("\n".join(lines) + "\n")
           PY
-
-      - name: Fail if either Linux test run failed
-        if: ${{ always() && (steps.run_tests_serial.outcome != 'success' || steps.run_tests_default.outcome != 'success') }}
-        shell: bash
-        run: |
-          echo "Serial test run outcome: ${{ steps.run_tests_serial.outcome }}"
-          echo "Default test run outcome: ${{ steps.run_tests_default.outcome }}"
-          exit 1
 
   build-and-test-windows:
     name: Build .NET library and run tests on Windows
@@ -324,26 +298,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:CI_DIAGNOSTICS_DIR | Out-Null
           Write-Output "uplink.NET diagnostics logs will be written to: $env:CI_DIAGNOSTICS_DIR"
 
-      - name: Run test suite without parallelism
-        id: run_tests_serial
+      - name: Run test suite
+        id: run_tests
         env:
           TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
-        continue-on-error: true
-        run: dotnet test uplink.NET.sln -c Release --no-build --settings xunit.serial.runsettings --results-directory TestResults --logger "trx;LogFilePrefix=windows-integration-tests-serial"
-
-      - name: Run test suite with default parallelism
-        id: run_tests_default
-        if: ${{ always() }}
-        env:
-          TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
-          TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
-          UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
-          UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
-        continue-on-error: true
-        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=windows-integration-tests-default"
+        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=windows-integration-tests"
 
       - name: Upload test results
         if: ${{ always() }}
@@ -367,8 +329,7 @@ jobs:
         if: ${{ always() }}
         shell: bash
         env:
-          TEST_OUTCOME_SERIAL: ${{ steps.run_tests_serial.outcome }}
-          TEST_OUTCOME_DEFAULT: ${{ steps.run_tests_default.outcome }}
+          TEST_OUTCOME: ${{ steps.run_tests.outcome }}
           DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
         run: |
           python <<'PY'
@@ -379,9 +340,7 @@ jobs:
 
           results_dir = Path("TestResults")
           trx_files = sorted(results_dir.rglob("*.trx"))
-          serial_outcome = os.environ.get("TEST_OUTCOME_SERIAL", "unknown")
-          default_outcome = os.environ.get("TEST_OUTCOME_DEFAULT", "unknown")
-          overall_outcome = "success" if serial_outcome == "success" and default_outcome == "success" else "failure"
+          outcome = os.environ.get("TEST_OUTCOME", "unknown")
           diagnostics_dir = Path(os.environ["DIAGNOSTICS_DIR"])
           diagnostics_logs = sorted(diagnostics_dir.rglob("*.log")) if diagnostics_dir.exists() else []
 
@@ -435,9 +394,7 @@ jobs:
               "",
               "| Metric | Value |",
               "| --- | --- |",
-              f"| Serial run outcome | {serial_outcome} |",
-              f"| Default run outcome | {default_outcome} |",
-              f"| Overall outcome | {overall_outcome} |",
+              f"| Outcome | {outcome} |",
               f"| Test result files | {len(trx_files)} |",
               f"| Total | {totals['total']} |",
               f"| Executed | {totals['executed']} |",
@@ -462,11 +419,3 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write("\n".join(lines) + "\n")
           PY
-
-      - name: Fail if either Windows test run failed
-        if: ${{ always() && (steps.run_tests_serial.outcome != 'success' || steps.run_tests_default.outcome != 'success') }}
-        shell: bash
-        run: |
-          echo "Serial test run outcome: ${{ steps.run_tests_serial.outcome }}"
-          echo "Default test run outcome: ${{ steps.run_tests_default.outcome }}"
-          exit 1
