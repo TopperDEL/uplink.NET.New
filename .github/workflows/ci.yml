@@ -175,6 +175,13 @@ jobs:
           DOTNET_DbgEnableMiniDump: '1'
           DOTNET_DbgMiniDumpType: '4'
           DOTNET_DbgMiniDumpName: ${{ github.workspace }}/TestResults/coredumps/managed-coredump.%p
+          # Log every step of the createdump invocation to stderr so we can
+          # see *why* a managed minidump isn't being produced in practice.
+          # Previous runs captured a kernel core but no managed-coredump.*
+          # file ever appeared — these flags make the failure visible.
+          DOTNET_CreateDumpDiagnostics: '1'
+          DOTNET_CreateDumpVerboseDiagnostics: '1'
+          DOTNET_EnableDiagnostics: '1'
           COMPlus_DbgEnableMiniDump: '1'
           COMPlus_DbgMiniDumpType: '4'
           COMPlus_DbgMiniDumpName: ${{ github.workspace }}/TestResults/coredumps/managed-coredump.%p
@@ -219,13 +226,26 @@ jobs:
           # authored minidump.
           CLR_RUNTIME_DIR="$(ls -d /usr/share/dotnet/shared/Microsoft.NETCore.App/10.*/ 2>/dev/null | sort -V | tail -1)"
           echo "CLR runtime dir: $CLR_RUNTIME_DIR"
+          echo "DAC / SOS files present:"
+          ls -la "$CLR_RUNTIME_DIR"libmscord* "$CLR_RUNTIME_DIR"libcoreclr.so "$CLR_RUNTIME_DIR"libsos* 2>/dev/null || true
+          dotnet-dump --version || true
 
           # Script of SOS commands executed inside dotnet-dump's REPL.
           # Note: single-quoted heredoc would block ${CLR_RUNTIME_DIR}
           # expansion; we interpolate it here on purpose.
+          #
+          # `modules` confirms libcoreclr / libmscordaccore are visible in the
+          # dump; if they aren't, DAC can never bootstrap regardless of
+          # setclrpath.
+          # `clrthreads` tries CLR-aware thread enumeration; if it succeeds
+          # where `clrstack` fails, the crashing thread just doesn't have a
+          # managed frame — we can switch to a managed thread with
+          # `setthread <id>` and re-run clrstack (added as clrstack0 below).
           analyze_cmds=$(cat <<EOF
           setclrpath ${CLR_RUNTIME_DIR}
+          modules
           threads
+          clrthreads
           clrstack -all -f
           syncblk
           pe
