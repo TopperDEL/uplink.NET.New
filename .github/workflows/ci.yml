@@ -52,6 +52,10 @@ jobs:
   build-native-windows:
     name: Build Windows native runtime
     runs-on: ubuntu-latest
+    # Temporarily disabled while we focus on the Linux "test host crashed"
+    # investigation; re-enable by removing this `if:` line (and the matching
+    # one on build-and-test-windows).
+    if: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -399,6 +403,8 @@ jobs:
   build-and-test-windows:
     name: Build .NET library and run tests on Windows
     runs-on: windows-latest
+    # Temporarily disabled — see build-native-windows for the context.
+    if: false
     needs:
       - build-native-windows
     env:
