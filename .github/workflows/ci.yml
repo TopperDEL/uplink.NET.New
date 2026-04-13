@@ -520,6 +520,161 @@ jobs:
               summary.write("\n".join(lines) + "\n")
           PY
 
+  build-and-test-linux-race:
+    # Runs the test suite against a libstorj_uplink.so built with Go's
+    # race detector (`go build -race`) so any data race in uplink-c or its
+    # upstream storj.io/uplink dependency is reported with full goroutine
+    # stacks instead of surfacing hours later as an intermittent SIGSEGV.
+    #
+    # Previous attempt failed with
+    #   ThreadSanitizer failed to allocate 0x1fc0000 bytes at address ...
+    # because CoreCLR reserves fixed virtual address ranges at startup that
+    # collide with TSan's shadow-memory mapping. The fix (per Gemini) is:
+    #
+    #   1. Build with -race (embeds TSan into libstorj_uplink.so).
+    #   2. Stop TSan from stealing SIGSEGV/SIGILL/SIGFPE/SIGBUS — CoreCLR
+    #      needs those to implement managed null-ref checks and arithmetic
+    #      exceptions. `TSAN_OPTIONS=handle_sig*=0` disables the TSan
+    #      handlers so CoreCLR's handlers stay in charge.
+    #   3. LD_PRELOAD the race-instrumented .so so TSan gets its address
+    #      range reservation in early — before CoreCLR reserves its own.
+    #      Loading it via P/Invoke's dlopen is too late; CoreCLR has
+    #      already claimed the ranges TSan needs.
+    #
+    # Marked continue-on-error so a TSan report doesn't block PRs while we
+    # triage what is/isn't a real race. Race reports land in
+    # TestResults/race-logs/race.<pid> and are uploaded as an artifact.
+    name: Run tests under Go race detector (experimental)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    env:
+      CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/TestResults-race/diagnostics
+      CI_COREDUMP_DIR: ${{ github.workspace }}/TestResults-race/coredumps
+      CI_RACE_LOG_DIR: ${{ github.workspace }}/TestResults-race/race-logs
+      RACE_LIB_DIR: ${{ github.workspace }}/native/linux-x64-race
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build uplink-c with -race
+        run: |
+          # `go build -race` embeds TSan into the shared library. Keeps
+          # symbols for useful stacks. uplink-c's Makefile strips symbols
+          # with -ldflags="-s -w"; we bypass it and invoke go build directly.
+          git clone --branch "$UPLINK_C_REF" --depth 1 \
+            https://github.com/storj/uplink-c.git "$HOME/uplink-c"
+          pushd "$HOME/uplink-c"
+          mkdir -p .build
+          CGO_ENABLED=1 go build -race -buildmode=c-shared \
+            -o .build/libuplink.so .
+          popd
+          mkdir -p "$RACE_LIB_DIR"
+          cp "$HOME/uplink-c/.build/libuplink.so" \
+             "$RACE_LIB_DIR/libstorj_uplink.so"
+          # Stage the same file into the .NET runtimes/ folder so that
+          # dlopen() via P/Invoke also finds it (belt-and-suspenders with
+          # LD_PRELOAD).
+          target="$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native"
+          mkdir -p "$target"
+          cp "$RACE_LIB_DIR/libstorj_uplink.so" "$target/libstorj_uplink.so"
+          ls -lh "$RACE_LIB_DIR/" "$target/"
+
+      - name: Restore
+        run: dotnet restore uplink.NET.sln
+
+      - name: Build
+        run: dotnet build uplink.NET.sln -c Release --no-restore -p:StorjUplinkVersion="$UPLINK_C_REF"
+
+      - name: Prepare diagnostics logging
+        shell: bash
+        run: |
+          mkdir -p "$CI_DIAGNOSTICS_DIR" "$CI_COREDUMP_DIR" "$CI_RACE_LOG_DIR"
+          echo "uplink.NET diagnostics: $CI_DIAGNOSTICS_DIR"
+          echo "core dumps:             $CI_COREDUMP_DIR"
+          echo "race detector reports:  $CI_RACE_LOG_DIR"
+
+      - name: Run test suite under race detector
+        id: run_tests_race
+        continue-on-error: true
+        env:
+          TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
+          TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
+          UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
+          UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
+          UPLINK_RUN_STRESS: '1'
+          # GORACE is the Go-side race-detector config; log_path sets a
+          # per-process file prefix for race reports, halt_on_error keeps
+          # the process alive so we capture more than the first race,
+          # history_size widens per-goroutine history for better stacks.
+          GORACE: log_path=${{ github.workspace }}/TestResults-race/race-logs/race halt_on_error=0 history_size=7
+          # TSAN_OPTIONS overrides the embedded TSan runtime's signal
+          # handling so CoreCLR keeps ownership of SIGSEGV / SIGILL /
+          # SIGFPE / SIGBUS (used for managed null-ref, DivideByZero, etc).
+          # Without this the .NET runtime crashes during startup.
+          TSAN_OPTIONS: handle_segv=0 handle_sigill=0 handle_sigfpe=0 handle_sigbus=0
+          # LD_PRELOAD forces the race-instrumented .so (and its embedded
+          # TSan runtime) to be resident before CoreCLR begins. If we let
+          # dlopen pull it in during the first P/Invoke, TSan's fixed
+          # shadow mapping collides with CoreCLR's reserved ranges and
+          # init fails with "ThreadSanitizer failed to allocate ...".
+          LD_PRELOAD: ${{ github.workspace }}/native/linux-x64-race/libstorj_uplink.so
+        run: |
+          dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
+            --results-directory "${{ github.workspace }}/TestResults-race" \
+            --logger "trx;LogFilePrefix=linux-race-integration-tests" \
+            --blame \
+            --blame-hang-timeout 15m \
+            --diag:"${{ github.workspace }}/TestResults-race/diag/vstest.log"
+
+      - name: Summarize race reports
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          reports=( "$CI_RACE_LOG_DIR"/race.* )
+          if [[ ${#reports[@]} -eq 0 ]]; then
+            echo "No TSan race reports were produced."
+            echo "## Race detector: no races detected" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "Found ${#reports[@]} race report file(s)."
+          total_races=0
+          for r in "${reports[@]}"; do
+              n=$(grep -c "^WARNING: DATA RACE" "$r" 2>/dev/null || echo 0)
+              total_races=$((total_races + n))
+              echo
+              echo "::group::$(basename "$r") — ${n} race(s)"
+              cat "$r"
+              echo "::endgroup::"
+          done
+          echo "## Race detector: ${total_races} race(s) across ${#reports[@]} file(s)" >> "$GITHUB_STEP_SUMMARY"
+          echo "See artifact \`ci-race-logs-linux\` for the raw reports." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload race detector reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-race-logs-linux
+          path: ${{ env.CI_RACE_LOG_DIR }}/
+          if-no-files-found: warn
+
+      - name: Upload race test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-results-linux-race
+          path: |
+            TestResults-race/
+          if-no-files-found: warn
+
   build-and-test-windows:
     name: Build .NET library and run tests on Windows
     runs-on: windows-latest
