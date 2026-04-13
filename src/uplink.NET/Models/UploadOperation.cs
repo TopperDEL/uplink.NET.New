@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using uplink.NET.Exceptions;
 using uplink.NET.Native;
 using NativeCallTrace = uplink.NET.Diagnostics.UplinkDiagnosticsSession.NativeCallTrace;
@@ -259,8 +260,8 @@ public class UploadOperation : IDisposable
 
         foreach (var e in entries)
         {
-            UplinkInterop.FreeCoTaskMem(e.key);
-            UplinkInterop.FreeCoTaskMem(e.value);
+            Marshal.FreeCoTaskMem(e.key);
+            Marshal.FreeCoTaskMem(e.value);
         }
 
         trace?.Success();

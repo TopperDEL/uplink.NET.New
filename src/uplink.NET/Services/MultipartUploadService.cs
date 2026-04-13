@@ -116,8 +116,8 @@ public class MultipartUploadService : IMultipartUploadService
                     if (entries != null)
                         foreach (var e in entries)
                         {
-                            UplinkInterop.FreeCoTaskMem(e.key);
-                            UplinkInterop.FreeCoTaskMem(e.value);
+                            Marshal.FreeCoTaskMem(e.key);
+                            Marshal.FreeCoTaskMem(e.value);
                         }
                 }
 
@@ -377,8 +377,8 @@ public class MultipartUploadService : IMultipartUploadService
             }
             finally
             {
-                UplinkInterop.FreeCoTaskMem(prefix);
-                UplinkInterop.FreeCoTaskMem(cursor);
+                Marshal.FreeCoTaskMem(prefix);
+                Marshal.FreeCoTaskMem(cursor);
                 projectLease.Dispose();
             }
         });
