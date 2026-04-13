@@ -189,6 +189,18 @@ jobs:
         # there. The test command itself uses absolute paths.
         run: |
           ulimit -c unlimited
+          # Include *all* memory regions in the kernel core. The default
+          # coredump_filter (0x33 on Ubuntu 24.04) excludes anonymous shared
+          # pages, which is precisely where the CoreCLR JIT heap, GC heap and
+          # managed type metadata live. Without them dotnet-dump analyze can
+          # open the core but SOS fails with "Failed to load data access
+          # module, 0x80004002" — confirmed locally against a captured dump.
+          # 0x7F = all flags: anon-private, anon-shared, file-private,
+          # file-shared, ELF headers, huge private, huge shared.
+          # Writing to /proc/self/coredump_filter here affects this shell
+          # and all descendants (dotnet test and the test host).
+          echo 0x7F | sudo tee /proc/self/coredump_filter > /dev/null || true
+          echo "coredump_filter: $(cat /proc/self/coredump_filter)"
           cd "$CI_COREDUMP_DIR"
           dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
             --results-directory "${{ github.workspace }}/TestResults" \
@@ -207,7 +219,12 @@ jobs:
           # method names — which plain gdb cannot. That gets us actual C#
           # stacks including the method that crashed.
           shopt -s nullglob
-          dotnet tool install -g dotnet-dump >/dev/null
+          # The stable 9.0.x dotnet-dump on NuGet cannot read .NET 10 DACs
+          # (SOS fails with 0x80004002 after successfully opening the core).
+          # The dnceng public feed ships 10.0.x daily builds that can.
+          dotnet tool install -g dotnet-dump \
+              --add-source https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-tools/nuget/v3/index.json \
+              >/dev/null
           export PATH="$HOME/.dotnet/tools:$PATH"
 
           dumps=( "$CI_COREDUMP_DIR"/core.* "$CI_COREDUMP_DIR"/managed-coredump.* )
