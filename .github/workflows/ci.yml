@@ -609,16 +609,38 @@ jobs:
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
           UPLINK_RUN_STRESS: '1'
-          # GORACE is the Go-side race-detector config; log_path sets a
-          # per-process file prefix for race reports, halt_on_error keeps
-          # the process alive so we capture more than the first race,
-          # history_size widens per-goroutine history for better stacks.
-          GORACE: log_path=${{ github.workspace }}/TestResults-race/race-logs/race halt_on_error=0 history_size=7
-          # TSAN_OPTIONS overrides the embedded TSan runtime's signal
-          # handling so CoreCLR keeps ownership of SIGSEGV / SIGILL /
-          # SIGFPE / SIGBUS (used for managed null-ref, DivideByZero, etc).
-          # Without this the .NET runtime crashes during startup.
-          TSAN_OPTIONS: handle_segv=0 handle_sigill=0 handle_sigfpe=0 handle_sigbus=0
+          # Go's race runtime is a fork of compiler-rt's TSan. It reads its
+          # configuration from GORACE (primary) and — for some options —
+          # TSAN_OPTIONS (secondary). Previous run had the handle_sig*=0
+          # flags only in TSAN_OPTIONS and the outer `dotnet` CLI died
+          # with exit 66 (TSan's default exitcode) before producing any
+          # output. Moved them into GORACE where Go's race runtime will
+          # definitely pick them up. Left in TSAN_OPTIONS too in case a
+          # non-Go library inside the process (e.g. libclrjit) also
+          # negotiates TSan state.
+          #
+          # Key options:
+          #   log_path                — per-pid file prefix for race reports
+          #   halt_on_error=0         — keep running after the first race
+          #   history_size=7          — widen goroutine history for stacks
+          #   exitcode=0              — race detected != non-zero exit;
+          #                             otherwise TSan aborts 66 on the
+          #                             first false positive from CLR
+          #                             internals and we lose everything
+          #                             that would have been reported
+          #   handle_sig*=0           — let CoreCLR own SIGSEGV/SIGILL/
+          #                             SIGFPE/SIGBUS (managed null-ref,
+          #                             DivideByZero, etc)
+          #   verbosity=1             — print TSan init diagnostics to
+          #                             stderr so we see WHY init fails
+          #                             when it does
+          GORACE: >-
+            log_path=${{ github.workspace }}/TestResults-race/race-logs/race
+            halt_on_error=0 history_size=7 exitcode=0 verbosity=1
+            handle_segv=0 handle_sigill=0 handle_sigfpe=0 handle_sigbus=0
+          TSAN_OPTIONS: >-
+            handle_segv=0 handle_sigill=0 handle_sigfpe=0 handle_sigbus=0
+            exitcode=0 verbosity=1
           # LD_PRELOAD forces the race-instrumented .so (and its embedded
           # TSan runtime) to be resident before CoreCLR begins. If we let
           # dlopen pull it in during the first P/Invoke, TSan's fixed
@@ -626,12 +648,24 @@ jobs:
           # init fails with "ThreadSanitizer failed to allocate ...".
           LD_PRELOAD: ${{ github.workspace }}/native/linux-x64-race/libstorj_uplink.so
         run: |
+          # Don't use `set -e`: if `dotnet test` exits non-zero we still
+          # want the stderr we captured, plus any TSan output already
+          # written. Previous run logged nothing between the env block
+          # and the exit-code line because `bash -e` terminated early.
+          set +e
           dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
             --results-directory "${{ github.workspace }}/TestResults-race" \
             --logger "trx;LogFilePrefix=linux-race-integration-tests" \
             --blame \
             --blame-hang-timeout 15m \
-            --diag:"${{ github.workspace }}/TestResults-race/diag/vstest.log"
+            --diag:"${{ github.workspace }}/TestResults-race/diag/vstest.log" \
+            2>&1 | tee "${{ github.workspace }}/TestResults-race/dotnet-test.log"
+          rc=${PIPESTATUS[0]}
+          echo "dotnet test exit code: $rc"
+          # Keep the step green — the job is marked continue-on-error and
+          # we want the subsequent Summarize and Upload steps to always
+          # run so diagnostic output reaches the artifact.
+          exit 0
 
       - name: Summarize race reports
         if: ${{ always() }}
