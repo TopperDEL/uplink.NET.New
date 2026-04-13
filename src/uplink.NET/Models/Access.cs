@@ -208,9 +208,9 @@ public class Access : IDisposable
             foreach (var nativePrefix in nativePrefixes)
             {
                 if (nativePrefix.bucket != nint.Zero)
-                    UplinkInterop.FreeCoTaskMem(nativePrefix.bucket);
+                    Marshal.FreeCoTaskMem(nativePrefix.bucket);
                 if (nativePrefix.prefix != nint.Zero)
-                    UplinkInterop.FreeCoTaskMem(nativePrefix.prefix);
+                    Marshal.FreeCoTaskMem(nativePrefix.prefix);
             }
         }
     }
@@ -279,9 +279,9 @@ public class Access : IDisposable
     private static void FreeNativeConfig(UplinkInterop.UplinkConfig cfg)
     {
         if (cfg.user_agent != nint.Zero)
-            UplinkInterop.FreeCoTaskMem(cfg.user_agent);
+            Marshal.FreeCoTaskMem(cfg.user_agent);
         if (cfg.temp_directory != nint.Zero)
-            UplinkInterop.FreeCoTaskMem(cfg.temp_directory);
+            Marshal.FreeCoTaskMem(cfg.temp_directory);
     }
 
     private static Config? CloneConfig(Config? config)

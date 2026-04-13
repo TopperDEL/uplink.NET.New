@@ -259,8 +259,8 @@ public class UploadOperation : IDisposable
 
         foreach (var e in entries)
         {
-            UplinkInterop.FreeCoTaskMem(e.key);
-            UplinkInterop.FreeCoTaskMem(e.value);
+            System.Runtime.InteropServices.Marshal.FreeCoTaskMem(e.key);
+            System.Runtime.InteropServices.Marshal.FreeCoTaskMem(e.value);
         }
 
         trace?.Success();

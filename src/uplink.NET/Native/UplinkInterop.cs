@@ -11,7 +11,6 @@ internal static unsafe partial class UplinkInterop
 {
     private const string LibName = "storj_uplink";
     internal const int EndOfFileErrorCode = -1;
-    internal static bool ForceDisableNativeCleanupForDebugging => true;
 
     // ── Error ────────────────────────────────────────────────────────────────
     [StructLayout(LayoutKind.Sequential)]
@@ -270,7 +269,7 @@ internal static unsafe partial class UplinkInterop
     internal static partial UplinkAccessResult uplink_parse_access(string serialized);
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_access_result_native(UplinkAccessResult result);
+    internal static partial void uplink_free_access_result(UplinkAccessResult result);
 
     [LibraryImport(LibName)]
     internal static partial UplinkStringResult uplink_access_serialize(nint access);
@@ -283,7 +282,7 @@ internal static unsafe partial class UplinkInterop
         nint prefixes_count);
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_string_result_native(UplinkStringResult result);
+    internal static partial void uplink_free_string_result(UplinkStringResult result);
 
     // ── Project ───────────────────────────────────────────────────────────────
     [LibraryImport(LibName)]
@@ -293,13 +292,13 @@ internal static unsafe partial class UplinkInterop
     internal static partial UplinkProjectResult uplink_open_project(nint access);
 
     [LibraryImport(LibName)]
-    private static partial nint uplink_close_project_native(nint project); // returns UplinkError*
+    internal static partial nint uplink_close_project(nint project); // returns UplinkError*
 
     [LibraryImport(LibName)]
     internal static partial nint uplink_revoke_access(nint project, nint access); // returns UplinkError*
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_project_result_native(UplinkProjectResult result);
+    internal static partial void uplink_free_project_result(UplinkProjectResult result);
 
     // ── Bucket ────────────────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
@@ -331,10 +330,10 @@ internal static unsafe partial class UplinkInterop
     internal static partial nint uplink_bucket_iterator_err(nint iterator); // returns UplinkError*
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_bucket_iterator_native(nint iterator);
+    internal static partial void uplink_free_bucket_iterator(nint iterator);
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_bucket_result_native(UplinkBucketResult result);
+    internal static partial void uplink_free_bucket_result(UplinkBucketResult result);
 
     // ── Upload ────────────────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
@@ -356,7 +355,7 @@ internal static unsafe partial class UplinkInterop
     internal static partial UplinkObjectResult uplink_upload_info(nint upload);
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_upload_result_native(UplinkUploadResult result);
+    internal static partial void uplink_free_upload_result(UplinkUploadResult result);
 
     // ── Download ──────────────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
@@ -366,13 +365,13 @@ internal static unsafe partial class UplinkInterop
     internal static partial UplinkReadResult uplink_download_read(nint download, void* bytes, nuint length);
 
     [LibraryImport(LibName)]
-    private static partial nint uplink_close_download_native(nint download); // returns UplinkError*
+    internal static partial nint uplink_close_download(nint download); // returns UplinkError*
 
     [LibraryImport(LibName)]
     internal static partial UplinkObjectResult uplink_download_info(nint download);
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_download_result_native(UplinkDownloadResult result);
+    internal static partial void uplink_free_download_result(UplinkDownloadResult result);
 
     // ── Object ────────────────────────────────────────────────────────────────
     [LibraryImport(LibName)]
@@ -392,7 +391,7 @@ internal static unsafe partial class UplinkInterop
     internal static partial nint uplink_object_iterator_err(nint iterator); // returns UplinkError*
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_object_iterator_native(nint iterator);
+    internal static partial void uplink_free_object_iterator(nint iterator);
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
     internal static partial UplinkObjectResult uplink_stat_object(nint project, string bucket, string key);
@@ -419,7 +418,7 @@ internal static unsafe partial class UplinkInterop
         nint options);
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_object_result_native(UplinkObjectResult result);
+    internal static partial void uplink_free_object_result(UplinkObjectResult result);
 
     // ── Multipart upload ──────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
@@ -447,16 +446,16 @@ internal static unsafe partial class UplinkInterop
     internal static partial UplinkPartResult uplink_part_upload_info(nint part_upload);
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_upload_info_result_native(UplinkUploadInfoResult result);
+    internal static partial void uplink_free_upload_info_result(UplinkUploadInfoResult result);
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_commit_upload_result_native(UplinkCommitUploadResult result);
+    internal static partial void uplink_free_commit_upload_result(UplinkCommitUploadResult result);
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_part_upload_result_native(UplinkPartUploadResult result);
+    internal static partial void uplink_free_part_upload_result(UplinkPartUploadResult result);
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_part_result_native(UplinkPartResult result);
+    internal static partial void uplink_free_part_result(UplinkPartResult result);
 
     // ── Upload iterator ──────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
@@ -473,7 +472,7 @@ internal static unsafe partial class UplinkInterop
     internal static partial nint uplink_upload_iterator_err(nint iterator); // returns UplinkError*
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_upload_iterator_native(nint iterator);
+    internal static partial void uplink_free_upload_iterator(nint iterator);
 
     // ── Part iterator ────────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
@@ -490,139 +489,19 @@ internal static unsafe partial class UplinkInterop
     internal static partial nint uplink_part_iterator_err(nint iterator); // returns UplinkError*
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_part_iterator_native(nint iterator);
+    internal static partial void uplink_free_part_iterator(nint iterator);
 
     // ── Error ─────────────────────────────────────────────────────────────────
     [LibraryImport(LibName)]
-    private static partial void uplink_free_error_native(nint error); // UplinkError*
+    internal static partial void uplink_free_error(nint error); // UplinkError*
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_write_result_native(UplinkWriteResult result);
+    internal static partial void uplink_free_write_result(UplinkWriteResult result);
 
     [LibraryImport(LibName)]
-    private static partial void uplink_free_read_result_native(UplinkReadResult result);
+    internal static partial void uplink_free_read_result(UplinkReadResult result);
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-    internal static void uplink_free_access_result(UplinkAccessResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_access_result_native(result);
-    }
-
-    internal static void uplink_free_string_result(UplinkStringResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_string_result_native(result);
-    }
-
-    internal static nint uplink_close_project(nint project) =>
-        ForceDisableNativeCleanupForDebugging ? nint.Zero : uplink_close_project_native(project);
-
-    internal static void uplink_free_project_result(UplinkProjectResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_project_result_native(result);
-    }
-
-    internal static void uplink_free_bucket_iterator(nint iterator)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_bucket_iterator_native(iterator);
-    }
-
-    internal static void uplink_free_bucket_result(UplinkBucketResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_bucket_result_native(result);
-    }
-
-    internal static void uplink_free_upload_result(UplinkUploadResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_upload_result_native(result);
-    }
-
-    internal static nint uplink_close_download(nint download) =>
-        ForceDisableNativeCleanupForDebugging ? nint.Zero : uplink_close_download_native(download);
-
-    internal static void uplink_free_download_result(UplinkDownloadResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_download_result_native(result);
-    }
-
-    internal static void uplink_free_object_iterator(nint iterator)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_object_iterator_native(iterator);
-    }
-
-    internal static void uplink_free_object_result(UplinkObjectResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_object_result_native(result);
-    }
-
-    internal static void uplink_free_upload_info_result(UplinkUploadInfoResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_upload_info_result_native(result);
-    }
-
-    internal static void uplink_free_commit_upload_result(UplinkCommitUploadResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_commit_upload_result_native(result);
-    }
-
-    internal static void uplink_free_part_upload_result(UplinkPartUploadResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_part_upload_result_native(result);
-    }
-
-    internal static void uplink_free_part_result(UplinkPartResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_part_result_native(result);
-    }
-
-    internal static void uplink_free_upload_iterator(nint iterator)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_upload_iterator_native(iterator);
-    }
-
-    internal static void uplink_free_part_iterator(nint iterator)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_part_iterator_native(iterator);
-    }
-
-    internal static void uplink_free_error(nint error)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_error_native(error);
-    }
-
-    internal static void uplink_free_write_result(UplinkWriteResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_write_result_native(result);
-    }
-
-    internal static void uplink_free_read_result(UplinkReadResult result)
-    {
-        if (!ForceDisableNativeCleanupForDebugging)
-            uplink_free_read_result_native(result);
-    }
-
-    internal static void FreeCoTaskMem(nint ptr)
-    {
-        if (ptr != nint.Zero && !ForceDisableNativeCleanupForDebugging)
-            Marshal.FreeCoTaskMem(ptr);
-    }
-
     /// <summary>Reads error message and code from a native UplinkError*, then frees it.</summary>
     internal static (string message, int code) ConsumeError(nint errorPtr)
     {

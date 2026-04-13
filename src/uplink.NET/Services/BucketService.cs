@@ -210,7 +210,7 @@ public class BucketService : IBucketService
         nint iterator = UplinkInterop.uplink_list_buckets(projectHandle, &nativeOpts);
 
         if (nativeOpts.cursor != nint.Zero)
-            UplinkInterop.FreeCoTaskMem(nativeOpts.cursor);
+            Marshal.FreeCoTaskMem(nativeOpts.cursor);
 
         var list = new BucketList();
         try
