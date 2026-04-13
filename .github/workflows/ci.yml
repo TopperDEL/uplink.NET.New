@@ -143,6 +143,8 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
+          # Opt in to the disposal-race stress suite (DisposeStressTests).
+          UPLINK_RUN_STRESS: '1'
           # GOTRACEBACK=crash makes the Go runtime print all goroutine stacks
           # and abort() on a fatal error — produces a core dump (with ulimit -c)
           # and a readable goroutine trace on stderr.
@@ -383,6 +385,7 @@ jobs:
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
+          UPLINK_RUN_STRESS: '1'
           # GOTRACEBACK=crash makes the Go runtime print all goroutine stacks
           # and abort() on a fatal error. On Windows this produces a Watson
           # minidump via WER in addition to the Go traceback on stderr.
