@@ -138,16 +138,61 @@ jobs:
       - name: Enable native core dumps
         shell: bash
         run: |
-          # gdb is needed for the post-crash backtrace step.
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gdb
-          # Override core_pattern so dumps land in our artifacts dir with a
-          # predictable name. ubuntu-latest runners ship with apport piping
-          # cores away by default.
           sudo mkdir -p "$CI_COREDUMP_DIR"
           sudo chmod 1777 "$CI_COREDUMP_DIR"
-          echo "${CI_COREDUMP_DIR}/core.%e.%p.%t" | sudo tee /proc/sys/kernel/core_pattern
+
+          # Previous runs showed DOTNET_DbgEnableMiniDump never fired —
+          # confirmed by empty stderr even with DOTNET_CreateDumpDiagnostics=1.
+          # Go's cgo runtime installs its own SIGSEGV handler on every thread
+          # that enters cgo, and it wins over CoreCLR's handler on those
+          # threads. When the crash happens on a .NET thread that has entered
+          # uplink-c, Go handles the signal and exits before createdump runs.
+          #
+          # Workaround: install a core_pattern pipe handler. When the kernel
+          # sees a SIGSEGV it pipes the standard ELF core to our helper's
+          # stdin AND keeps the crashing process in a dumpable-zombie state
+          # until the helper exits. During that window we invoke CoreCLR's
+          # createdump directly, which produces a proper managed minidump
+          # (complete with the CLR-specific ELF notes SOS needs). The raw
+          # kernel core is still written alongside it for defence in depth.
+          sudo tee /usr/local/bin/uplink-coredump-helper >/dev/null <<'HELPER'
+          #!/usr/bin/env bash
+          # Called by the kernel on a crash. Args: %e %p %t (exe pid time).
+          # Kernel streams the ELF core on stdin.
+          set +e
+          exe=$1 ; pid=$2 ; ts=$3
+          out_dir="__CI_COREDUMP_DIR__"
+          mkdir -p "$out_dir"
+          base="$out_dir/core.$exe.$pid.$ts"
+
+          # 1. Persist the raw kernel core from stdin.
+          cat >"$base" 2>/dev/null
+
+          # 2. If this was a .NET process, ask createdump for a managed
+          #    minidump while the kernel still holds the process live. The
+          #    binary lives next to libcoreclr.so.
+          createdump_bin="$(ls /usr/share/dotnet/shared/Microsoft.NETCore.App/10.*/createdump 2>/dev/null | sort -V | tail -1)"
+          if [[ -n "$createdump_bin" && "$exe" == *dotnet* ]]; then
+              "$createdump_bin" --full --name "$out_dir/managed-coredump.$pid" "$pid" \
+                  >"$out_dir/createdump.$pid.log" 2>&1
+          fi
+          HELPER
+          sudo sed -i "s|__CI_COREDUMP_DIR__|${CI_COREDUMP_DIR}|" /usr/local/bin/uplink-coredump-helper
+          sudo chmod +x /usr/local/bin/uplink-coredump-helper
+
+          # Point core_pattern at the helper. The leading `|` tells the
+          # kernel to pipe the core to this program's stdin instead of
+          # writing it to a file.
+          echo "|/usr/local/bin/uplink-coredump-helper %e %p %t" \
+              | sudo tee /proc/sys/kernel/core_pattern
           sudo sysctl -w kernel.core_uses_pid=1
+          # core_uses_pid has no effect once core_pattern uses a pipe but
+          # it's harmless. core_pipe_limit controls how many concurrent
+          # pipe handlers may run; bump it so a crash during startup of
+          # another doesn't get discarded.
+          echo 16 | sudo tee /proc/sys/kernel/core_pipe_limit
           ulimit -c unlimited
           echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
 
@@ -189,17 +234,17 @@ jobs:
         # there. The test command itself uses absolute paths.
         run: |
           ulimit -c unlimited
-          # Include *all* memory regions in the kernel core. The default
-          # coredump_filter (0x33 on Ubuntu 24.04) excludes anonymous shared
-          # pages, which is precisely where the CoreCLR JIT heap, GC heap and
-          # managed type metadata live. Without them dotnet-dump analyze can
-          # open the core but SOS fails with "Failed to load data access
-          # module, 0x80004002" — confirmed locally against a captured dump.
-          # 0x7F = all flags: anon-private, anon-shared, file-private,
-          # file-shared, ELF headers, huge private, huge shared.
-          # Writing to /proc/self/coredump_filter here affects this shell
-          # and all descendants (dotnet test and the test host).
-          echo 0x7F | sudo tee /proc/self/coredump_filter > /dev/null || true
+          # Bump coredump_filter to include every category of mapped memory.
+          # No sudo: each process owns its own /proc/<pid>/coredump_filter
+          # and the setting is inherited by children. Previously this used
+          # `sudo tee`, which silently set the filter on the sudo-tee process
+          # (its own /proc/self) rather than this shell — confirmed by CI
+          # logs showing coredump_filter=00000033 after the call.
+          # 0x7F covers anon-private, anon-shared, file-private, file-shared,
+          # ELF headers, huge private, huge shared. Still won't recover the
+          # CLR-specific ELF notes that only createdump emits, but gives us
+          # as much of the process's real memory as the kernel can provide.
+          echo 0x7F > /proc/self/coredump_filter
           echo "coredump_filter: $(cat /proc/self/coredump_filter)"
           cd "$CI_COREDUMP_DIR"
           dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
