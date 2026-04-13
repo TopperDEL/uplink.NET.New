@@ -620,27 +620,31 @@ jobs:
           # negotiates TSan state.
           #
           # Key options:
-          #   log_path                — per-pid file prefix for race reports
-          #   halt_on_error=0         — keep running after the first race
-          #   history_size=7          — widen goroutine history for stacks
-          #   exitcode=0              — race detected != non-zero exit;
-          #                             otherwise TSan aborts 66 on the
-          #                             first false positive from CLR
-          #                             internals and we lose everything
-          #                             that would have been reported
-          #   handle_sig*=0           — let CoreCLR own SIGSEGV/SIGILL/
-          #                             SIGFPE/SIGBUS (managed null-ref,
-          #                             DivideByZero, etc)
-          #   verbosity=1             — print TSan init diagnostics to
-          #                             stderr so we see WHY init fails
-          #                             when it does
+          #   log_path         — per-pid file prefix for race reports
+          #   halt_on_error=0  — keep running after the first race
+          #                      (covers the case we actually care about:
+          #                      a legit race report shouldn't abort the
+          #                      whole suite. This option is enough on its
+          #                      own; we do NOT pair it with exitcode=0.)
+          #   history_size=7   — widen goroutine history for stacks
+          #   handle_sig*=0    — let CoreCLR own SIGSEGV/SIGILL/SIGFPE/
+          #                      SIGBUS (managed null-ref, DivideByZero...)
+          #   verbosity=1      — print TSan init diagnostics to stderr
+          #
+          # NOTE: deliberately no `exitcode=0`. We set it previously and
+          # it bit us — `dotnet test` exited 0 in 6 ms with zero output
+          # because TSan encountered an internal fatal error, would have
+          # aborted with exitcode=66, but with exitcode=0 it silently
+          # `_exit(0)`'d instead. Leaving it at the default 66 means real
+          # TSan fatals surface as non-zero, which our `set +e` + final
+          # `exit 0` wrapper catches without killing downstream steps.
           GORACE: >-
             log_path=${{ github.workspace }}/TestResults-race/race-logs/race
-            halt_on_error=0 history_size=7 exitcode=0 verbosity=1
+            halt_on_error=0 history_size=7 verbosity=1
             handle_segv=0 handle_sigill=0 handle_sigfpe=0 handle_sigbus=0
           TSAN_OPTIONS: >-
             handle_segv=0 handle_sigill=0 handle_sigfpe=0 handle_sigbus=0
-            exitcode=0 verbosity=1
+            verbosity=1
           # NOTE: LD_PRELOAD is deliberately NOT in the step env block.
           # Putting it there applies to the bash shell that runs this
           # script — and a previous run (job 71133590033) died silently
