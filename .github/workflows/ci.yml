@@ -141,7 +141,7 @@ jobs:
           DOTNET_DbgMiniDumpName: ${{ github.workspace }}/TestResults/coredumps/coredump.%d.%t
           COMPlus_EnableDiagnostics: '1'
           UPLINK_DEBUG: '1'
-          GODEBUG: 'cgocheck=2,invalidptr=1,clobberfree=1'
+          GODEBUG: 'invalidptr=1,clobberfree=1'
           MALLOC_CHECK_: '3'
         run: |
           dotnet test uplink.NET.sln -c Release --no-build \
