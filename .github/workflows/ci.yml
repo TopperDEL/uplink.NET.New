@@ -153,6 +153,20 @@ jobs:
           # .NET threadpool threads. Putting %p first lets us parse pid/ts
           # robustly regardless of how many tokens the exe field splits into.
           # Kernel streams the ELF core on stdin.
+          #
+          # IMPORTANT: the kernel holds the crashing process in a
+          # dumpable-zombie state until *this helper exits*. Whatever we do
+          # here directly extends the crash-to-cleanup window. A previous
+          # iteration invoked CoreCLR's createdump inside the helper to also
+          # produce a managed minidump, but that hung for 11+ minutes: the
+          # kernel is simultaneously feeding us the ELF core via stdin,
+          # createdump's ptrace_attach against the half-frozen target blocks,
+          # and the CI job grinds to a halt. Removed.
+          #
+          # All we do now is persist the kernel ELF core. dotnet-dump analyze
+          # against that core DOES return working managed stacks once the
+          # coredump_filter is set to 0x7F (proven out in previous runs) —
+          # so this is sufficient for triage without any deadlock risk.
           set +e
           pid=$1
           ts=$2
@@ -162,23 +176,7 @@ jobs:
           mkdir -p "$out_dir"
           safe_name="${exe_name// /_}"
           base="$out_dir/core.${safe_name}.${pid}.${ts}"
-
-          # 1. Persist the raw kernel core from stdin.
           cat >"$base" 2>/dev/null
-
-          # 2. Invoke CoreCLR's createdump on the still-live pid. The kernel
-          #    keeps the crashing process in a dumpable-zombie state until
-          #    this helper exits, so createdump can ptrace-attach and emit a
-          #    proper managed minidump. We try unconditionally: createdump
-          #    fails fast on non-.NET processes, so the no-op path is cheap.
-          createdump_bin=$(ls /usr/share/dotnet/shared/Microsoft.NETCore.App/10.*/createdump 2>/dev/null | sort -V | tail -1)
-          if [[ -n "$createdump_bin" ]]; then
-              "$createdump_bin" --full \
-                  --name "$out_dir/managed-coredump.${pid}" \
-                  "$pid" >"$out_dir/createdump.${pid}.log" 2>&1
-              echo "createdump exit: $? (see createdump.${pid}.log)" \
-                  >>"$out_dir/createdump.${pid}.log"
-          fi
           HELPER
           sudo sed -i "s|__CI_COREDUMP_DIR__|${CI_COREDUMP_DIR}|" /usr/local/bin/uplink-coredump-helper
           sudo chmod +x /usr/local/bin/uplink-coredump-helper
@@ -249,10 +247,24 @@ jobs:
           echo 0x7F > /proc/self/coredump_filter
           echo "coredump_filter: $(cat /proc/self/coredump_filter)"
           cd "$CI_COREDUMP_DIR"
+          # --blame (without --blame-crash) still writes Sequence_*.xml
+          # listing the tests that were running when the host died, which
+          # is all we need from vstest's Blame collector.
+          #
+          # --blame-crash was removed because Blame's dump path goes through
+          # Microsoft.Diagnostics.NETCore.Client, which in .NET 10 fails to
+          # load its own types ("Unable to load one or more of the requested
+          # types" in vstest.log) and then hangs for 11+ minutes waiting on
+          # a diagnostics IPC reply that never arrives. Proven deadlock,
+          # observed in job 71123680775. We get the crash dump from the
+          # kernel core_pattern pipe handler instead.
+          #
+          # --blame-hang-timeout still applies: it governs individual test
+          # hang detection, not crash dumping.
           dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
             --results-directory "${{ github.workspace }}/TestResults" \
             --logger "trx;LogFilePrefix=linux-integration-tests" \
-            --blame-crash --blame-crash-dump-type full \
+            --blame \
             --blame-hang-timeout 10m \
             --diag:"${{ github.workspace }}/TestResults/diag/vstest.log"
 
