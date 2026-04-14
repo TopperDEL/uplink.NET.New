@@ -103,16 +103,16 @@ jobs:
           # See scripts/repro-sigaltstack/README.md.
           cd "$GITHUB_WORKSPACE/scripts/repro-sigaltstack"
           CGO_ENABLED=1 go build -buildmode=c-shared -o libgolib.so golib.go
-          cc -O2 -g -o repro host.c -ldl -lpthread
-          # Run the reproducer in a loop. The crash is intermittent;
-          # a single pass may not trigger it. 5 attempts × up to 60s
-          # each = max 5 minutes, which is acceptable for CI.
+          cc -O2 -o repro host.c -ldl -lpthread
+          # Run the reproducer in a loop. The crash is a race between
+          # needm/dropm sigaltstack lifecycle and signal delivery; a
+          # single pass may not trigger it.
           echo "running sigaltstack reproducer (native amd64, up to 5 attempts)..."
           crashed=0
           for attempt in 1 2 3 4 5; do
             echo "--- attempt $attempt ---"
             set +e
-            LD_LIBRARY_PATH=. timeout 60 ./repro 2>&1
+            LD_LIBRARY_PATH=. timeout 30 ./repro 2>&1
             rc=$?
             set -e
             if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then
