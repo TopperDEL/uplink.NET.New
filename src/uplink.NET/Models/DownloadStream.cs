@@ -12,22 +12,19 @@ public class DownloadStream : Stream
     private readonly Access _access;
 
     private nint _downloadHandle;
-    private Access.ProjectHandleLease? _projectLease;
     private readonly long _length;
     private long _position;
     private bool _disposed;
     private bool _endOfStream;
 
-    internal DownloadStream(nint downloadHandle, long length, Access.ProjectHandleLease projectLease, Access access)
+    internal DownloadStream(nint downloadHandle, long length, Access access)
     {
         if (downloadHandle == nint.Zero)
             throw new ArgumentException("A valid native download handle is required.", nameof(downloadHandle));
-        ArgumentNullException.ThrowIfNull(projectLease);
         ArgumentNullException.ThrowIfNull(access);
         _access = access;
 
         _downloadHandle = downloadHandle;
-        _projectLease = projectLease;
         _length = Math.Max(0, length);
     }
 
@@ -149,9 +146,6 @@ public class DownloadStream : Stream
                 UplinkInterop.FreeDownloadHandle(_downloadHandle);
                 _downloadHandle = nint.Zero;
             }
-
-            _projectLease?.Dispose();
-            _projectLease = null;
         }
 
         base.Dispose(disposing);

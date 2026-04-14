@@ -96,7 +96,7 @@ public class ObjectService : IObjectService
         string bucketName, string objectKey,
         UploadOptions? uploadOptions, CustomMetadata? customMetadata)
     {
-        var projectLease = _access.AcquireProjectLease();
+        using var projectLease = _access.AcquireProjectLease();
         using var trace = _access.Trace("uplink_upload_object", ("bucket", bucketName), ("key", objectKey));
         var opts = new UplinkInterop.UplinkUploadOptions
         {
@@ -112,7 +112,6 @@ public class ObjectService : IObjectService
             var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref uploadResult.error);
             trace?.NativeError(msg, code);
             UplinkInterop.uplink_free_upload_result(uploadResult);
-            projectLease.Dispose();
             throw new Exception($"Failed to begin upload: {msg}");
         }
 
@@ -122,19 +121,26 @@ public class ObjectService : IObjectService
         {
             trace?.Fail("Native library returned a null upload handle without an error.");
             UplinkInterop.uplink_free_upload_result(uploadResult);
-            projectLease.Dispose();
             throw new Exception("Failed to begin upload: native library returned a null upload handle without an error.");
         }
 
-        // Set custom metadata if supplied
-        if (customMetadata?.Entries.Count > 0)
+        try
         {
-            using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", bucketName), ("key", objectKey));
-            SetCustomMetadataNative(uploadHandle, customMetadata, metadataTrace);
-        }
+            // Set custom metadata if supplied
+            if (customMetadata?.Entries.Count > 0)
+            {
+                using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", bucketName), ("key", objectKey));
+                SetCustomMetadataNative(uploadHandle, customMetadata, metadataTrace);
+            }
 
-        trace?.Success();
-        return Task.FromResult(new ChunkedUploadOperation(uploadHandle, objectKey, projectLease, _access));
+            trace?.Success();
+            return Task.FromResult(new ChunkedUploadOperation(uploadHandle, objectKey, _access));
+        }
+        catch
+        {
+            UplinkInterop.FreeUploadHandle(uploadHandle);
+            throw;
+        }
     }
 
     // ── List ──────────────────────────────────────────────────────────────────
@@ -265,17 +271,15 @@ public class ObjectService : IObjectService
         string key,
         DownloadOptions downloadOptions)
     {
-        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
+            using var projectLease = _access.AcquireProjectLease();
             var handle = nint.Zero;
-            var leaseTransferred = false;
             try
             {
                 handle = OpenDownloadHandle(projectLease.Handle, bucketName, key, downloadOptions);
                 var length = GetDownloadLength(handle, downloadOptions, bucketName, key);
-                var stream = new DownloadStream(handle, length, projectLease, _access);
-                leaseTransferred = true;
+                var stream = new DownloadStream(handle, length, _access);
                 handle = nint.Zero;
                 return stream;
             }
@@ -283,9 +287,6 @@ public class ObjectService : IObjectService
             {
                 if (handle != nint.Zero)
                     UplinkInterop.FreeDownloadHandle(handle);
-
-                if (!leaseTransferred)
-                    projectLease.Dispose();
             }
         });
     }

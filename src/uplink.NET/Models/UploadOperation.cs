@@ -24,7 +24,7 @@ public class UploadOperation : IDisposable
     private readonly object _startSync = new();
 
     private bool _cancelRequested;
-    private Access.ProjectHandleLease? _projectLease;
+    private bool _started;
 
     public string ObjectName { get; }
     public long BytesSent { get; private set; }
@@ -64,37 +64,25 @@ public class UploadOperation : IDisposable
     {
         lock (_startSync)
         {
-            if (_projectLease != null)
+            if (_started)
                 throw new InvalidOperationException("The upload operation has already been started.");
 
-            var projectLease = _access.AcquireProjectLease();
+            _started = true;
+            var (uploadHandle, beginError) = BeginNativeUpload();
+            if (beginError != null)
+            {
+                SetFailed(beginError);
+                return Task.CompletedTask;
+            }
 
-            try
-            {
-                _projectLease = projectLease;
-                return Task.Run(PerformUploadAsync);
-            }
-            catch
-            {
-                projectLease.Dispose();
-                _projectLease = null;
-                throw;
-            }
+            return Task.Run(() => PerformUploadAsync(uploadHandle));
         }
     }
 
-    private async Task PerformUploadAsync()
+    private async Task PerformUploadAsync(nint uploadHandle)
     {
         Running = true;
         BytesSent = 0;
-
-        // Begin upload outside async/unsafe boundary
-        var (uploadHandle, beginError) = BeginNativeUpload();
-        if (beginError != null)
-        {
-            SetFailed(beginError);
-            return;
-        }
 
         try
         {
@@ -150,20 +138,16 @@ public class UploadOperation : IDisposable
         finally
         {
             UplinkInterop.FreeUploadHandle(uploadHandle);
-            lock (_startSync)
-            {
-                _projectLease?.Dispose();
-                _projectLease = null;
-            }
         }
     }
 
     private unsafe (nint handle, string? error) BeginNativeUpload()
     {
         using var trace = _access.Trace("uplink_upload_object", ("bucket", _bucketName), ("key", ObjectName));
+        using var projectLease = _access.AcquireProjectLease();
         var opts = new UplinkInterop.UplinkUploadOptions { expires = _nativeOptions.Expires };
         var result = UplinkInterop.uplink_upload_object(
-            _projectLease!.Handle, _bucketName, ObjectName, &opts);
+            projectLease.Handle, _bucketName, ObjectName, &opts);
         if (result.error != nint.Zero)
         {
             var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);

@@ -19,7 +19,7 @@ public class DownloadOperation : IDisposable
     private readonly object _startSync = new();
 
     private bool _cancelRequested;
-    private Access.ProjectHandleLease? _projectLease;
+    private bool _started;
 
     public string ObjectName { get; }
     public byte[] DownloadedBytes { get; private set; } = Array.Empty<byte>();
@@ -53,40 +53,26 @@ public class DownloadOperation : IDisposable
     {
         lock (_startSync)
         {
-            if (_projectLease != null)
+            if (_started)
                 throw new InvalidOperationException("The download operation has already been started.");
 
-            var projectLease = _access.AcquireProjectLease();
+            _started = true;
+            var (downloadHandle, beginError) = BeginNativeDownload();
+            if (beginError != null)
+            {
+                SetFailed(beginError);
+                return Task.CompletedTask;
+            }
 
-            try
-            {
-                _projectLease = projectLease;
-                return Task.Run(PerformDownloadAsync);
-            }
-            catch
-            {
-                projectLease.Dispose();
-                _projectLease = null;
-                throw;
-            }
+            TotalBytes = GetTotalBytes(downloadHandle);
+            return Task.Run(() => PerformDownloadAsync(downloadHandle));
         }
     }
 
-    private async Task PerformDownloadAsync()
+    private async Task PerformDownloadAsync(nint downloadHandle)
     {
         Running       = true;
         BytesReceived = 0;
-
-        // Open download outside unsafe/async boundary
-        var (downloadHandle, beginError) = BeginNativeDownload();
-        if (beginError != null)
-        {
-            SetFailed(beginError);
-            return;
-        }
-
-        // Determine total bytes
-        TotalBytes = GetTotalBytes(downloadHandle);
 
         try
         {
@@ -135,24 +121,20 @@ public class DownloadOperation : IDisposable
         finally
         {
             UplinkInterop.FreeDownloadHandle(downloadHandle);
-            lock (_startSync)
-            {
-                _projectLease?.Dispose();
-                _projectLease = null;
-            }
         }
     }
 
     private unsafe (nint handle, string? error) BeginNativeDownload()
     {
         using var trace = _access.Trace("uplink_download_object", ("bucket", _bucketName), ("key", ObjectName));
+        using var projectLease = _access.AcquireProjectLease();
         var opts = new UplinkInterop.UplinkDownloadOptions
         {
             offset = _options.Offset,
             length = _options.Length
         };
         var result = UplinkInterop.uplink_download_object(
-            _projectLease!.Handle, _bucketName, ObjectName, &opts);
+            projectLease.Handle, _bucketName, ObjectName, &opts);
         if (result.error != nint.Zero)
         {
             var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
