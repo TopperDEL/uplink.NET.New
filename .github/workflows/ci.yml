@@ -94,6 +94,29 @@ jobs:
 
           ls -lh "$target/"
 
+      - name: Reproduce sigaltstack overflow (SIGRT_2)
+        shell: bash
+        run: |
+          # Standalone C+Go reproducer for the sigaltstack overflow.
+          # Sends SIGRT_2 (CoreCLR's GC suspension signal) to Go M
+          # threads with 16 KB sigaltstacks under concurrent cgo load.
+          # See scripts/repro-sigaltstack/README.md.
+          cd "$GITHUB_WORKSPACE/scripts/repro-sigaltstack"
+          CGO_ENABLED=1 go build -buildmode=c-shared -o libgolib.so golib.go
+          cc -O2 -g -o repro host.c -ldl -lpthread
+          echo "running sigaltstack reproducer (native amd64)..."
+          set +e
+          LD_LIBRARY_PATH=. timeout 120 ./repro 2>&1
+          rc=$?
+          set -e
+          if [ $rc -eq 0 ]; then
+            echo "PASS — no crash in 200 iterations"
+          elif [ $rc -eq 124 ]; then
+            echo "TIMEOUT — reproducer took >120s (may need more iterations)"
+          else
+            echo "::warning::Sigaltstack reproducer CRASHED (exit $rc)"
+          fi
+
       - name: Test Go signal handler chaining
         shell: bash
         run: |

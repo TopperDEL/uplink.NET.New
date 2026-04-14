@@ -1,0 +1,5 @@
+*.so
+*.h
+repro
+repro_small
+strace.log
