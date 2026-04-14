@@ -399,7 +399,7 @@ public class Access : IDisposable
         lock (_lifetimeSync)
         {
             if (_activeProjectLeases == 0)
-                throw new InvalidOperationException("Project lease count cannot be negative.");
+                throw new InvalidOperationException("Project lease released without an active lease.");
 
             _activeProjectLeases--;
 
