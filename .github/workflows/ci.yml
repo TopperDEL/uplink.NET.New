@@ -366,7 +366,14 @@ jobs:
           #   sigaltstack, tgkill, kill, rt_sigqueueinfo, etc)
           # -o file: write to file (not mixed into stdout)
           # -t: timestamps
-          strace -f -t -e trace=signal \
+          # timeout 300: kill strace after 5 minutes if it's still
+          # tracing lingering Go threads after tests complete. Normal
+          # test runs finish in ~90s; a crash exits sooner. Without
+          # this, strace -f waits for ALL traced threads to exit, and
+          # Go's runtime threads persist → 20-min hang (observed in
+          # job 71259431231).
+          timeout --signal=KILL 300 \
+            strace -f -t -e trace=signal \
             -o "${{ github.workspace }}/TestResults/diag/strace-signals.log" \
             dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
               --results-directory "${{ github.workspace }}/TestResults" \
