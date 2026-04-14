@@ -384,12 +384,13 @@ public class Access : IDisposable
         {
             ThrowIfDisposedNoLock();
 
-            if (_accessHandle == nint.Zero)
+            if (_projectHandle == nint.Zero)
                 throw new ObjectDisposedException(nameof(Access));
 
-            var leaseHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
+            // The native uplink project handle supports concurrent operations; the lease count
+            // only keeps the shared handle alive until in-flight work has finished.
             _activeProjectLeases++;
-            return new ProjectHandleLease(this, leaseHandle);
+            return new ProjectHandleLease(this, _projectHandle);
         }
     }
 
@@ -397,19 +398,13 @@ public class Access : IDisposable
     {
         lock (_lifetimeSync)
         {
-            try
-            {
-                if (projectHandle != nint.Zero)
-                    UplinkInterop.FreeProjectHandle(projectHandle);
-            }
-            finally
-            {
-                if (_activeProjectLeases > 0)
-                    _activeProjectLeases--;
+            if (_activeProjectLeases == 0)
+                throw new InvalidOperationException("Project lease released without an active lease.");
 
-                if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
-                    ReleaseHandlesNoLock();
-            }
+            _activeProjectLeases--;
+
+            if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
+                ReleaseHandlesNoLock();
         }
     }
 
