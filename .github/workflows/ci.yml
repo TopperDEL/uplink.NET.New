@@ -271,7 +271,11 @@ jobs:
           # want. With `all` the Go side prints goroutine stacks to stderr
           # and unwinds, letting CoreCLR capture its minidump. If the process
           # really can't continue we still get a kernel core via core_pattern.
-          GOTRACEBACK: all
+          # Use 'system' instead of 'all' so Go prints RUNTIME goroutines
+          # too (scheduler, GC, sysmon). If Go's handler is involved in the
+          # crash, these stacks will show the internal state. 'system' does
+          # NOT call abort() (that's 'crash' only), so it's safe.
+          GOTRACEBACK: system
           GODEBUG: 'cgocheck=1,invalidptr=1,clobberfree=1'
           # .NET in-process minidumps for managed-side crashes.
           DOTNET_DbgEnableMiniDump: '1'
@@ -287,6 +291,22 @@ jobs:
           COMPlus_DbgEnableMiniDump: '1'
           COMPlus_DbgMiniDumpType: '4'
           COMPlus_DbgMiniDumpName: ${{ github.workspace }}/TestResults/coredumps/managed-coredump.%p
+          # ── CoreCLR signal-handler diagnostics ──
+          # Both sigaltstack and Go-not-chaining hypotheses are disproven.
+          # Remaining theory: CoreCLR's own signal handler double-faults
+          # (touches unmapped memory during SIGSEGV handling → SI_KERNEL).
+          # These env vars perturb the runtime to confirm/deny:
+          #
+          # EnableAlternateStackCheck: CoreCLR adds extra validation when
+          #   running on an alternate signal stack. If the crash is an
+          #   alt-stack-related double fault, this may surface the root
+          #   cause as a diagnostic message instead of a silent death.
+          DOTNET_EnableAlternateStackCheck: '1'
+          # EnableWriteXorExecute=0: disables W^X for JIT pages. If the
+          #   crash is related to JIT page protection changes (CoreCLR
+          #   handler touching a page that was made non-readable during
+          #   W^X enforcement), disabling it removes that variable.
+          DOTNET_EnableWriteXorExecute: '0'
         # cd into the coredump dir so cores written with relative names land
         # there. The test command itself uses absolute paths.
         run: |
@@ -318,12 +338,19 @@ jobs:
           #
           # --blame-hang-timeout still applies: it governs individual test
           # hang detection, not crash dumping.
+          # Capture stderr separately so Go goroutine dumps and CoreCLR
+          # crash diagnostics survive even if stdout is lost. The test
+          # host writes crash info to fd 2; dotnet test may or may not
+          # forward it depending on vstest's pipe setup. Belt-and-
+          # suspenders: tee stderr to a file AND merge into stdout.
+          mkdir -p "${{ github.workspace }}/TestResults/diag"
           dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
             --results-directory "${{ github.workspace }}/TestResults" \
             --logger "trx;LogFilePrefix=linux-integration-tests" \
             --blame \
             --blame-hang-timeout 10m \
-            --diag:"${{ github.workspace }}/TestResults/diag/vstest.log"
+            --diag:"${{ github.workspace }}/TestResults/diag/vstest.log" \
+            2> >(tee "${{ github.workspace }}/TestResults/diag/stderr.log" >&2)
 
       - name: Analyze dumps with dotnet-dump (managed stacks)
         if: ${{ always() && steps.run_tests.outcome != 'success' }}
