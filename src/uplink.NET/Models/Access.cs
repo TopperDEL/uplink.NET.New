@@ -387,6 +387,8 @@ public class Access : IDisposable
             if (_projectHandle == nint.Zero)
                 throw new ObjectDisposedException(nameof(Access));
 
+            // The native uplink project handle supports concurrent operations; the lease count
+            // only keeps the shared handle alive until in-flight work has finished.
             _activeProjectLeases++;
             return new ProjectHandleLease(this, _projectHandle);
         }
@@ -396,8 +398,10 @@ public class Access : IDisposable
     {
         lock (_lifetimeSync)
         {
-            if (_activeProjectLeases > 0)
-                _activeProjectLeases--;
+            if (_activeProjectLeases == 0)
+                throw new InvalidOperationException("Project lease count cannot be negative.");
+
+            _activeProjectLeases--;
 
             if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
                 ReleaseHandlesNoLock();
