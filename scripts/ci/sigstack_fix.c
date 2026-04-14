@@ -51,50 +51,54 @@
  * flag so the managed side can call it unconditionally at the top of
  * hot paths without double-allocating.
  */
+/*
+ * Thread-local pointer to the large alt stack we allocated. NULL if
+ * this thread has never had one installed. Re-used on subsequent
+ * calls if Go's cgo runtime overwrote it with its smaller stack.
+ */
+static __thread void *our_stack = NULL;
+
 __attribute__((visibility("default")))
 int uplink_sigstack_install(void) {
-    static __thread int installed = 0;
-    if (installed) {
-        return 0;
-    }
-
     /*
-     * Query the current alt stack first: if something else (a later-
-     * loaded runtime, a third-party library) has already set a stack
-     * of comparable size, we don't need to grow it.
+     * Check the ACTUAL current sigaltstack rather than relying on a
+     * boolean "installed" flag. Previous iteration used a fire-once
+     * flag and the fix was silently overridden: we installed before
+     * the cgo call, Go's minitSignalStack() replaced it with a ~32 KB
+     * stack during the first cgo entry on that thread, and the flag
+     * prevented us from re-installing afterwards.
+     *
+     * sigaltstack(NULL, &current) is cheap — reads from the kernel
+     * task struct, no context switch on Linux ≥ 5.x.
      */
     stack_t current;
     if (sigaltstack(NULL, &current) == 0
             && !(current.ss_flags & SS_DISABLE)
             && current.ss_size >= UPLINK_SIGALTSTACK_SIZE) {
-        installed = 1;
-        return 0;
+        return 0; /* already large enough, whether ours or someone else's */
     }
 
-    void *stack = malloc(UPLINK_SIGALTSTACK_SIZE);
-    if (stack == NULL) {
-        return -1;
+    /* Allocate once per thread; re-use on subsequent calls. */
+    if (our_stack == NULL) {
+        our_stack = malloc(UPLINK_SIGALTSTACK_SIZE);
+        if (our_stack == NULL) {
+            return -1;
+        }
+        /* Touch every page so the kernel commits them; avoids a soft
+         * fault *during* signal delivery. */
+        memset(our_stack, 0, UPLINK_SIGALTSTACK_SIZE);
     }
-    /* Touch every page so the kernel commits them; avoids a soft
-     * fault *during* signal delivery, which is exactly what we're
-     * trying to prevent. */
-    memset(stack, 0, UPLINK_SIGALTSTACK_SIZE);
 
     stack_t ss;
-    ss.ss_sp    = stack;
+    ss.ss_sp    = our_stack;
     ss.ss_size  = UPLINK_SIGALTSTACK_SIZE;
     ss.ss_flags = 0;
 
     if (sigaltstack(&ss, NULL) != 0) {
-        free(stack);
         return -2;
     }
 
-    installed = 1;
-    /* Intentionally leak `stack` — the kernel now holds a reference
-     * for signal delivery that persists for the life of this thread.
-     * Freeing would let the next allocator hand out that memory, and
-     * a signal arriving afterwards would write into someone else's
-     * buffer. Accepting the leak is the correct call. */
+    /* Intentionally leak `our_stack` — the kernel holds a reference
+     * for signal delivery that persists for the life of this thread. */
     return 0;
 }

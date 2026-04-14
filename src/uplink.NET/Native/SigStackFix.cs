@@ -30,37 +30,36 @@ internal static partial class SigStackFix
 {
     private const string LibName = "uplink_sigstack_fix";
 
+    // True once we've confirmed the shim is loadable. Once it fails
+    // with DllNotFoundException, we stop trying on ALL threads.
     [ThreadStatic]
-    private static bool _installed;
+    private static bool _checkedOnThisThread;
+    private static volatile bool _shimUnavailable;
 
     /// <summary>
-    /// Ensure the current thread has a large sigaltstack. Idempotent
-    /// per thread; cheap to call on every cgo entry point. No-ops on
-    /// platforms where the shim isn't loaded (e.g. Windows).
+    /// Ensure the current thread has a large sigaltstack. Designed to
+    /// be called on every cgo entry point (before AND after the
+    /// P/Invoke). Cheap: the native side reads the actual sigaltstack
+    /// size from the kernel task struct and returns immediately if it's
+    /// already large enough.
+    ///
+    /// Must be called AFTER the first cgo call on a thread too, not
+    /// just before, because Go's cgo runtime replaces whatever
+    /// sigaltstack was set with its own ~32 KB stack during M init.
     /// </summary>
     internal static void EnsureOnCurrentThread()
     {
-        if (_installed)
+        if (_shimUnavailable)
             return;
-
-        // Flip the flag before invoking the native helper so any
-        // re-entrant call from the same thread (e.g. via a debugger
-        // stepping in) doesn't recurse. The native side is itself
-        // idempotent via its own thread-local guard, so a duplicate
-        // call would be harmless anyway.
-        _installed = true;
 
         try
         {
             uplink_sigstack_install();
+            _checkedOnThisThread = true;
         }
         catch (DllNotFoundException)
         {
-            // Shim not deployed (e.g. running against a non-Linux
-            // build, or on a CI job that didn't produce the .so).
-            // The workaround is a no-op; the production crash that
-            // this diagnoses will still occur but the library still
-            // works.
+            _shimUnavailable = true;
         }
     }
 

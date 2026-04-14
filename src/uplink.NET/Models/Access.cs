@@ -63,6 +63,10 @@ public class Access : IDisposable
             try
             {
                 _projectHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
+                // Re-check sigaltstack after the first cgo call — Go's
+                // minitSignalStack() may have replaced our 1 MB stack
+                // with its own ~32 KB one during cgo thread init.
+                SigStackFix.EnsureOnCurrentThread();
                 trace?.Success();
             }
             catch
@@ -83,6 +87,8 @@ public class Access : IDisposable
         if (accessHandle == nint.Zero)
             throw new ArgumentException("Access handle must not be null.", nameof(accessHandle));
 
+        SigStackFix.EnsureOnCurrentThread();
+
         _config = CloneConfig(config);
         _diagnostics = CreateDiagnosticsSession(_config);
         _accessHandle = accessHandle;
@@ -91,6 +97,7 @@ public class Access : IDisposable
         try
         {
             _projectHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
+            SigStackFix.EnsureOnCurrentThread();
             trace?.Success();
         }
         catch
@@ -389,9 +396,11 @@ public class Access : IDisposable
 
     internal ProjectHandleLease AcquireProjectLease()
     {
-        // Ensure a large sigaltstack before the cgo call to open a new
-        // project below — and for any subsequent cgo work on this thread
-        // that runs behind the returned lease. Idempotent per thread.
+        // Install a large sigaltstack before the cgo call. Go's cgo
+        // runtime may override this with its own ~32 KB stack during
+        // the first cgo entry on this thread (minitSignalStack), so we
+        // also re-check AFTER the call. The native side checks the
+        // actual current stack size and is cheap if it's already large.
         SigStackFix.EnsureOnCurrentThread();
 
         lock (_lifetimeSync)
