@@ -254,6 +254,34 @@ inter-M signaling.
 | CoreCLR handler double-fault | `DOTNET_EnableAlternateStackCheck=1`, `DOTNET_EnableWriteXorExecute=0`, stderr capture | No CoreCLR output; crash is on a Go thread |
 | W^X JIT page protection | `DOTNET_EnableWriteXorExecute=0` | Crash unchanged |
 
+### Second strace capture (job 71274405401, run 24401881208)
+
+```
+6650  sigaltstack({ss_flags=SS_DISABLE}, {ss_sp=0x7f9cf18d3000, ss_size=16384})
+6652  sigaltstack({ss_sp=0x7f9cf18d3000, ss_size=16384}, NULL)
+6653  tgkill(6138, 6652, SIGRT_2)
+6652  --- SIGRT_2 {si_code=SI_TKILL} ---
+6652  --- SIGSEGV {si_code=SEGV_ACCERR, si_addr=0x7f9cf18d3ff0} ---
+6652  --- SIGSEGV {si_code=SI_KERNEL, si_addr=NULL} ---
+```
+
+Different failure mode from the first strace: the fault is at offset
+`0xff0` *within* the 16 KB stack (base `0x7f9cf18d3000`), not past the
+guard page below it. `SEGV_ACCERR` means the page exists but access was
+denied — the memory was likely freed or re-protected between thread
+6650 disabling the sigaltstack and thread 6652 reusing it.
+
+The two crashes together show two manifestations of the same root cause:
+
+1. **Overflow past the stack bottom** (first strace): handler call chain
+   too deep for 16 KB, hits the guard page.
+2. **Use-after-free / stale sigaltstack** (second strace): Go's M
+   lifecycle recycles sigaltstack memory across threads; a window exists
+   where one thread disables the stack and another thread's SIGRT_2
+   handler runs on the now-stale memory.
+
+Both are Go's sigaltstack lifecycle bugs under concurrent M churn.
+
 ### Correlation with concurrency
 
 The crash requires heavy concurrent cgo activity because:
