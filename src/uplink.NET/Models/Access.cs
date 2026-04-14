@@ -272,6 +272,9 @@ public class Access : IDisposable
 
             _ = Task.Run(async () =>
             {
+                // Fire-and-forget: the worker process owns the native handles.
+                // If this call is lost the worker will free all handles when its
+                // stdin closes (i.e. when the parent process exits).
                 try
                 {
                     await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>

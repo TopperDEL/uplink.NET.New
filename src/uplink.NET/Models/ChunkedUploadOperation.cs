@@ -124,6 +124,7 @@ public class ChunkedUploadOperation : IDisposable
             _uploadId = 0;
             _ = Task.Run(async () =>
             {
+                // Fire-and-forget: if lost, the worker cleans up on stdin-close / process exit.
                 try
                 {
                     await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>

@@ -84,6 +84,13 @@ internal sealed class NativeWorkerClient : IDisposable
             await ReadExactAsync(_stdout!, lenBuf, ct).ConfigureAwait(false);
             int responseLength = BitConverter.ToInt32(lenBuf, 0);
 
+            // Guard against corrupted / malicious length values (max 100 MB)
+            const int MaxResponseBytes = 100 * 1024 * 1024;
+            if (responseLength <= 0 || responseLength > MaxResponseBytes)
+                throw new InvalidDataException(
+                    $"Worker returned an invalid response length: {responseLength}. " +
+                    $"Expected a value between 1 and {MaxResponseBytes} bytes.");
+
             // Read response body
             var responseBuf = new byte[responseLength];
             await ReadExactAsync(_stdout!, responseBuf, ct).ConfigureAwait(false);
@@ -136,7 +143,13 @@ internal sealed class NativeWorkerClient : IDisposable
         _disposed = true;
         _lock.Dispose();
         try { _stdin?.Close(); } catch { }
-        try { _process?.Kill(); } catch { }
+        // Give the worker a chance to flush and exit cleanly before forcing a kill.
+        try
+        {
+            if (_process != null && !_process.WaitForExit(2000))
+                _process.Kill();
+        }
+        catch { }
         _process?.Dispose();
     }
 }
