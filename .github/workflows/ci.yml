@@ -145,12 +145,14 @@ jobs:
           import os
           import shutil
           import subprocess
+          import sys
           from pathlib import Path
 
           workspace = Path(os.environ["GITHUB_WORKSPACE"])
           bundle_dir = Path(os.environ["CRASH_ANALYSIS_DIR"])
           bundle_dir.mkdir(parents=True, exist_ok=True)
-          max_interesting_strings_per_dump = 50  # Keep metadata small enough for quick artifact review.
+          max_interesting_strings_per_dump = 50  # Cap metadata to a readable sample so artifact summaries stay compact.
+          max_strings_scan_bytes = 256 * 1024 * 1024
           interesting_string_suffixes = (".dll", ".deps.json")
           strings_command = shutil.which("strings")
 
@@ -179,7 +181,7 @@ jobs:
 
           if not dump_paths:
               print("No Linux crash dump files were found.")
-              raise SystemExit(0)
+              sys.exit(0)
 
           test_output_source = workspace / "tests" / "uplink.NET.IntegrationTests" / "bin" / "Release"
           test_output_destination = bundle_dir / "test-output"
@@ -206,6 +208,8 @@ jobs:
           ]
 
           def run_command(command, *, errors="strict"):
+              if not isinstance(command, (list, tuple)) or not command or any(not isinstance(part, str) for part in command):
+                  raise ValueError("run_command expects a non-empty list of trusted string arguments.")
               completed = subprocess.run(command, check=False, capture_output=True, text=True, errors=errors)
               output = completed.stdout
               if completed.stderr:
@@ -224,6 +228,8 @@ jobs:
 
               if strings_command is None:
                   interesting_lines = ["<strings command is not available on this runner>"]
+              elif dump_path.stat().st_size > max_strings_scan_bytes:
+                  interesting_lines = [f"<strings extraction skipped because the dump exceeds {max_strings_scan_bytes} bytes>"]
               else:
                   strings_output = run_command([strings_command, str(dump_path)], errors="replace")
                   interesting_lines = [
