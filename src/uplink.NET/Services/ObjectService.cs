@@ -126,15 +126,24 @@ public class ObjectService : IObjectService
             throw new Exception("Failed to begin upload: native library returned a null upload handle without an error.");
         }
 
-        // Set custom metadata if supplied
-        if (customMetadata?.Entries.Count > 0)
+        try
         {
-            using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", bucketName), ("key", objectKey));
-            SetCustomMetadataNative(uploadHandle, customMetadata, metadataTrace);
-        }
+            // Set custom metadata if supplied
+            if (customMetadata?.Entries.Count > 0)
+            {
+                using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", bucketName), ("key", objectKey));
+                SetCustomMetadataNative(uploadHandle, customMetadata, metadataTrace);
+            }
 
-        trace?.Success();
-        return Task.FromResult(new ChunkedUploadOperation(uploadHandle, objectKey, projectLease, _access));
+            trace?.Success();
+            return Task.FromResult(new ChunkedUploadOperation(uploadHandle, objectKey, projectLease, _access));
+        }
+        catch
+        {
+            UplinkInterop.FreeUploadHandle(uploadHandle);
+            projectLease.Dispose();
+            throw;
+        }
     }
 
     // ── List ──────────────────────────────────────────────────────────────────

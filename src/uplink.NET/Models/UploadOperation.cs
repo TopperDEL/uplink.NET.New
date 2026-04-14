@@ -24,6 +24,7 @@ public class UploadOperation : IDisposable
     private readonly object _startSync = new();
 
     private bool _cancelRequested;
+    private bool _started;
     private Access.ProjectHandleLease? _projectLease;
 
     public string ObjectName { get; }
@@ -64,15 +65,24 @@ public class UploadOperation : IDisposable
     {
         lock (_startSync)
         {
-            if (_projectLease != null)
+            if (_started)
                 throw new InvalidOperationException("The upload operation has already been started.");
 
             var projectLease = _access.AcquireProjectLease();
 
             try
             {
+                _started = true;
                 _projectLease = projectLease;
-                return Task.Run(PerformUploadAsync);
+                var (uploadHandle, beginError) = BeginNativeUpload();
+                if (beginError != null)
+                {
+                    ReleaseProjectLease();
+                    SetFailed(beginError);
+                    return Task.CompletedTask;
+                }
+
+                return Task.Run(() => PerformUploadAsync(uploadHandle));
             }
             catch
             {
@@ -83,18 +93,10 @@ public class UploadOperation : IDisposable
         }
     }
 
-    private async Task PerformUploadAsync()
+    private async Task PerformUploadAsync(nint uploadHandle)
     {
         Running = true;
         BytesSent = 0;
-
-        // Begin upload outside async/unsafe boundary
-        var (uploadHandle, beginError) = BeginNativeUpload();
-        if (beginError != null)
-        {
-            SetFailed(beginError);
-            return;
-        }
 
         try
         {
@@ -150,11 +152,7 @@ public class UploadOperation : IDisposable
         finally
         {
             UplinkInterop.FreeUploadHandle(uploadHandle);
-            lock (_startSync)
-            {
-                _projectLease?.Dispose();
-                _projectLease = null;
-            }
+            ReleaseProjectLease();
         }
     }
 
@@ -212,6 +210,15 @@ public class UploadOperation : IDisposable
     {
         var errPtr = UplinkInterop.uplink_upload_abort(handle);
         if (errPtr != nint.Zero) UplinkInterop.uplink_free_error(errPtr);
+    }
+
+    private void ReleaseProjectLease()
+    {
+        lock (_startSync)
+        {
+            _projectLease?.Dispose();
+            _projectLease = null;
+        }
     }
 
     private string? CommitNativeUpload(nint handle)

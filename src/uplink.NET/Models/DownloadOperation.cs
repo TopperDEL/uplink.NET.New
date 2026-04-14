@@ -19,6 +19,7 @@ public class DownloadOperation : IDisposable
     private readonly object _startSync = new();
 
     private bool _cancelRequested;
+    private bool _started;
     private Access.ProjectHandleLease? _projectLease;
 
     public string ObjectName { get; }
@@ -53,15 +54,25 @@ public class DownloadOperation : IDisposable
     {
         lock (_startSync)
         {
-            if (_projectLease != null)
+            if (_started)
                 throw new InvalidOperationException("The download operation has already been started.");
 
             var projectLease = _access.AcquireProjectLease();
 
             try
             {
+                _started = true;
                 _projectLease = projectLease;
-                return Task.Run(PerformDownloadAsync);
+                var (downloadHandle, beginError) = BeginNativeDownload();
+                if (beginError != null)
+                {
+                    ReleaseProjectLease();
+                    SetFailed(beginError);
+                    return Task.CompletedTask;
+                }
+
+                TotalBytes = GetTotalBytes(downloadHandle);
+                return Task.Run(() => PerformDownloadAsync(downloadHandle));
             }
             catch
             {
@@ -72,21 +83,10 @@ public class DownloadOperation : IDisposable
         }
     }
 
-    private async Task PerformDownloadAsync()
+    private async Task PerformDownloadAsync(nint downloadHandle)
     {
         Running       = true;
         BytesReceived = 0;
-
-        // Open download outside unsafe/async boundary
-        var (downloadHandle, beginError) = BeginNativeDownload();
-        if (beginError != null)
-        {
-            SetFailed(beginError);
-            return;
-        }
-
-        // Determine total bytes
-        TotalBytes = GetTotalBytes(downloadHandle);
 
         try
         {
@@ -135,11 +135,7 @@ public class DownloadOperation : IDisposable
         finally
         {
             UplinkInterop.FreeDownloadHandle(downloadHandle);
-            lock (_startSync)
-            {
-                _projectLease?.Dispose();
-                _projectLease = null;
-            }
+            ReleaseProjectLease();
         }
     }
 
@@ -230,6 +226,16 @@ public class DownloadOperation : IDisposable
             UplinkInterop.uplink_free_read_result(readResult);
         }
     }
+
+    private void ReleaseProjectLease()
+    {
+        lock (_startSync)
+        {
+            _projectLease?.Dispose();
+            _projectLease = null;
+        }
+    }
+
     private void SetFailed(string message)
     {
         Failed       = true;

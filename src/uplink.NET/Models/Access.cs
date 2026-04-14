@@ -7,13 +7,12 @@ using uplink.NET.Native;
 namespace uplink.NET.Models;
 
 /// <summary>
-/// Represents a parsed Storj access grant and an open project connection.
+/// Represents a parsed Storj access grant.
 /// Dispose to release the underlying native resources.
 /// </summary>
 public class Access : IDisposable
 {
     internal nint _accessHandle;
-    internal nint _projectHandle;
 
     private readonly Config? _config;
     private readonly UplinkDiagnosticsSession? _diagnostics;
@@ -23,10 +22,10 @@ public class Access : IDisposable
     private bool _disposeRequested;
     private bool _disposed;
 
-    /// <summary>Open a project using the supplied access-grant string.</summary>
+    /// <summary>Parse the supplied access-grant string.</summary>
     public Access(string accessGrant) : this(accessGrant, null) { }
 
-    /// <summary>Open a project with an optional <see cref="Config"/>.</summary>
+    /// <summary>Parse an access grant with an optional <see cref="Config"/>.</summary>
     public Access(string accessGrant, Config? config)
     {
         if (string.IsNullOrWhiteSpace(accessGrant))
@@ -55,17 +54,7 @@ public class Access : IDisposable
             _accessHandle = accessResult.access;
             accessResult.access = nint.Zero;
 
-            try
-            {
-                _projectHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
-                trace?.Success();
-            }
-            catch
-            {
-                UplinkInterop.FreeAccessHandle(_accessHandle);
-                _accessHandle = nint.Zero;
-                throw;
-            }
+            trace?.Success();
         }
         finally
         {
@@ -81,19 +70,6 @@ public class Access : IDisposable
         _config = CloneConfig(config);
         _diagnostics = CreateDiagnosticsSession(_config);
         _accessHandle = accessHandle;
-
-        using var trace = Trace("uplink_config_open_project");
-        try
-        {
-            _projectHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
-            trace?.Success();
-        }
-        catch
-        {
-            UplinkInterop.FreeAccessHandle(_accessHandle);
-            _accessHandle = nint.Zero;
-            throw;
-        }
     }
 
     /// <summary>Serialize this access grant so it can be stored or reused later.</summary>
@@ -380,31 +356,22 @@ public class Access : IDisposable
 
     internal ProjectHandleLease AcquireProjectLease()
     {
-        lock (_lifetimeSync)
+        var accessLease = AcquireAccessLease();
+
+        try
         {
-            ThrowIfDisposedNoLock();
+            var projectHandle = OpenProjectHandle(accessLease.Handle, _config, _diagnostics);
+            lock (_lifetimeSync)
+            {
+                _activeProjectLeases++;
+            }
 
-            if (_projectHandle == nint.Zero)
-                throw new ObjectDisposedException(nameof(Access));
-
-            // The native uplink project handle supports concurrent operations; the lease count
-            // only keeps the shared handle alive until in-flight work has finished.
-            _activeProjectLeases++;
-            return new ProjectHandleLease(this, _projectHandle);
+            return new ProjectHandleLease(this, projectHandle, accessLease);
         }
-    }
-
-    private void ReleaseProjectLease(nint projectHandle)
-    {
-        lock (_lifetimeSync)
+        catch
         {
-            if (_activeProjectLeases == 0)
-                throw new InvalidOperationException("Project lease released without an active lease.");
-
-            _activeProjectLeases--;
-
-            if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
-                ReleaseHandlesNoLock();
+            accessLease.Dispose();
+            throw;
         }
     }
 
@@ -420,16 +387,38 @@ public class Access : IDisposable
         }
     }
 
+    private void ReleaseProjectLease(nint projectHandle)
+    {
+        bool releaseHandles;
+
+        lock (_lifetimeSync)
+        {
+            if (_activeProjectLeases == 0)
+                throw new InvalidOperationException("Project lease released without an active lease.");
+
+            _activeProjectLeases--;
+            releaseHandles = _disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0;
+        }
+
+        try
+        {
+            if (projectHandle != nint.Zero)
+                UplinkInterop.FreeProjectHandle(projectHandle);
+        }
+        finally
+        {
+            if (releaseHandles)
+            {
+                lock (_lifetimeSync)
+                    ReleaseHandlesNoLock();
+            }
+        }
+    }
+
     private void ReleaseHandlesNoLock()
     {
         if (_disposed)
             return;
-
-        if (_projectHandle != nint.Zero)
-        {
-            UplinkInterop.FreeProjectHandle(_projectHandle);
-            _projectHandle = nint.Zero;
-        }
 
         if (_accessHandle != nint.Zero)
         {
@@ -456,11 +445,13 @@ public class Access : IDisposable
 
     internal sealed class ProjectHandleLease : IDisposable
     {
-        private Access? _owner;
+        private volatile Access? _owner;
+        private volatile AccessHandleLease? _accessLease;
 
-        internal ProjectHandleLease(Access owner, nint handle)
+        internal ProjectHandleLease(Access owner, nint handle, AccessHandleLease accessLease)
         {
             _owner = owner;
+            _accessLease = accessLease;
             Handle = handle;
         }
 
@@ -469,13 +460,21 @@ public class Access : IDisposable
         public void Dispose()
         {
             var owner = System.Threading.Interlocked.Exchange(ref _owner, null);
-            owner?.ReleaseProjectLease(Handle);
+            var accessLease = System.Threading.Interlocked.Exchange(ref _accessLease, null);
+            try
+            {
+                owner?.ReleaseProjectLease(Handle);
+            }
+            finally
+            {
+                accessLease?.Dispose();
+            }
         }
     }
 
     internal sealed class AccessHandleLease : IDisposable
     {
-        private Access? _owner;
+        private volatile Access? _owner;
 
         internal AccessHandleLease(Access owner, nint handle)
         {
