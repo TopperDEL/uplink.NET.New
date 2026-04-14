@@ -25,6 +25,7 @@ public class UploadOperation : IDisposable
 
     private bool _cancelRequested;
     private bool _started;
+    private Access.ProjectHandleLease? _projectLease;
 
     public string ObjectName { get; }
     public long BytesSent { get; private set; }
@@ -67,15 +68,29 @@ public class UploadOperation : IDisposable
             if (_started)
                 throw new InvalidOperationException("The upload operation has already been started.");
 
-            _started = true;
-            var (uploadHandle, beginError) = BeginNativeUpload();
-            if (beginError != null)
-            {
-                SetFailed(beginError);
-                return Task.CompletedTask;
-            }
+            var projectLease = _access.AcquireProjectLease();
 
-            return Task.Run(() => PerformUploadAsync(uploadHandle));
+            try
+            {
+                _started = true;
+                _projectLease = projectLease;
+                var (uploadHandle, beginError) = BeginNativeUpload();
+                if (beginError != null)
+                {
+                    _projectLease?.Dispose();
+                    _projectLease = null;
+                    SetFailed(beginError);
+                    return Task.CompletedTask;
+                }
+
+                return Task.Run(() => PerformUploadAsync(uploadHandle));
+            }
+            catch
+            {
+                projectLease.Dispose();
+                _projectLease = null;
+                throw;
+            }
         }
     }
 
@@ -138,16 +153,20 @@ public class UploadOperation : IDisposable
         finally
         {
             UplinkInterop.FreeUploadHandle(uploadHandle);
+            lock (_startSync)
+            {
+                _projectLease?.Dispose();
+                _projectLease = null;
+            }
         }
     }
 
     private unsafe (nint handle, string? error) BeginNativeUpload()
     {
         using var trace = _access.Trace("uplink_upload_object", ("bucket", _bucketName), ("key", ObjectName));
-        using var projectLease = _access.AcquireProjectLease();
         var opts = new UplinkInterop.UplinkUploadOptions { expires = _nativeOptions.Expires };
         var result = UplinkInterop.uplink_upload_object(
-            projectLease.Handle, _bucketName, ObjectName, &opts);
+            _projectLease!.Handle, _bucketName, ObjectName, &opts);
         if (result.error != nint.Zero)
         {
             var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);

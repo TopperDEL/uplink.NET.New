@@ -96,7 +96,7 @@ public class ObjectService : IObjectService
         string bucketName, string objectKey,
         UploadOptions? uploadOptions, CustomMetadata? customMetadata)
     {
-        using var projectLease = _access.AcquireProjectLease();
+        var projectLease = _access.AcquireProjectLease();
         using var trace = _access.Trace("uplink_upload_object", ("bucket", bucketName), ("key", objectKey));
         var opts = new UplinkInterop.UplinkUploadOptions
         {
@@ -112,6 +112,7 @@ public class ObjectService : IObjectService
             var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref uploadResult.error);
             trace?.NativeError(msg, code);
             UplinkInterop.uplink_free_upload_result(uploadResult);
+            projectLease.Dispose();
             throw new Exception($"Failed to begin upload: {msg}");
         }
 
@@ -121,6 +122,7 @@ public class ObjectService : IObjectService
         {
             trace?.Fail("Native library returned a null upload handle without an error.");
             UplinkInterop.uplink_free_upload_result(uploadResult);
+            projectLease.Dispose();
             throw new Exception("Failed to begin upload: native library returned a null upload handle without an error.");
         }
 
@@ -134,11 +136,12 @@ public class ObjectService : IObjectService
             }
 
             trace?.Success();
-            return Task.FromResult(new ChunkedUploadOperation(uploadHandle, objectKey, _access));
+            return Task.FromResult(new ChunkedUploadOperation(uploadHandle, objectKey, projectLease, _access));
         }
         catch
         {
             UplinkInterop.FreeUploadHandle(uploadHandle);
+            projectLease.Dispose();
             throw;
         }
     }
@@ -274,22 +277,24 @@ public class ObjectService : IObjectService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            using (projectLease)
+            var handle = nint.Zero;
+            var leaseTransferred = false;
+            try
             {
-                var handle = nint.Zero;
-                try
-                {
-                    handle = OpenDownloadHandle(projectLease.Handle, bucketName, key, downloadOptions);
-                    var length = GetDownloadLength(handle, downloadOptions, bucketName, key);
-                    var stream = new DownloadStream(handle, length, _access);
-                    handle = nint.Zero;
-                    return stream;
-                }
-                finally
-                {
-                    if (handle != nint.Zero)
-                        UplinkInterop.FreeDownloadHandle(handle);
-                }
+                handle = OpenDownloadHandle(projectLease.Handle, bucketName, key, downloadOptions);
+                var length = GetDownloadLength(handle, downloadOptions, bucketName, key);
+                var stream = new DownloadStream(handle, length, projectLease, _access);
+                leaseTransferred = true;
+                handle = nint.Zero;
+                return stream;
+            }
+            finally
+            {
+                if (handle != nint.Zero)
+                    UplinkInterop.FreeDownloadHandle(handle);
+
+                if (!leaseTransferred)
+                    projectLease.Dispose();
             }
         });
     }

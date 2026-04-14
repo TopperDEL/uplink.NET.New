@@ -10,6 +10,7 @@ public class ChunkedUploadOperation : IDisposable
 {
     private readonly Access _access;
     private nint _uploadHandle;
+    private Access.ProjectHandleLease? _projectLease;
     private bool _committed;
     private bool _disposed;
 
@@ -17,11 +18,13 @@ public class ChunkedUploadOperation : IDisposable
     public bool Failed { get; private set; }
     public string? ErrorMessage { get; private set; }
 
-    internal ChunkedUploadOperation(nint uploadHandle, string objectName, Access access)
+    internal ChunkedUploadOperation(nint uploadHandle, string objectName, Access.ProjectHandleLease projectLease, Access access)
     {
+        ArgumentNullException.ThrowIfNull(projectLease);
         _access = access ?? throw new ArgumentNullException(nameof(access));
         _uploadHandle = uploadHandle;
         ObjectName    = objectName;
+        _projectLease = projectLease;
     }
 
     /// <summary>Writes the supplied bytes to the upload stream.</summary>
@@ -148,5 +151,7 @@ public class ChunkedUploadOperation : IDisposable
 
         UplinkInterop.FreeUploadHandle(_uploadHandle);
         _uploadHandle = nint.Zero;
+        _projectLease?.Dispose();
+        _projectLease = null;
     }
 }
