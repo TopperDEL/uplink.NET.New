@@ -271,26 +271,53 @@ guard page below it. `SEGV_ACCERR` means the page exists but access was
 denied — the memory was likely freed or re-protected between thread
 6650 disabling the sigaltstack and thread 6652 reusing it.
 
-The two crashes together show two manifestations of the same root cause:
+### Third strace capture (job 71286374586, run 24404236193)
 
-1. **Overflow past the stack bottom** (first strace): handler call chain
-   too deep for 16 KB, hits the guard page.
-2. **Use-after-free / stale sigaltstack** (second strace): Go's M
-   lifecycle recycles sigaltstack memory across threads; a window exists
-   where one thread disables the stack and another thread's SIGRT_2
-   handler runs on the now-stale memory.
+```
+6275  sigaltstack({ss_flags=SS_DISABLE}, {ss_sp=0x7fa5c4024000, ss_size=16384})
+6275  +++ exited with 0 +++
+5978  tgkill(5948, 6276, SIGRT_2)
+6276  --- SIGRT_2 {si_code=SI_TKILL} ---
+6276  --- SIGSEGV {si_code=SEGV_ACCERR, si_addr=0x7fa5c4020b48} ---
+6276  --- SIGSEGV {si_code=SI_KERNEL, si_addr=NULL} ---
+```
 
-Both are Go's sigaltstack lifecycle bugs under concurrent M churn.
+Fault address `0x7fa5c4020b48` is `0x3000 + 0xb48` bytes **below** the
+disabled sigaltstack base `0x7fa5c4024000` — well past the bottom of
+the 16 KB region. Same pattern as crash 2: thread 6275 exited and
+disabled the sigaltstack, then SIGRT_2 arrived on thread 6276 which
+was using the same (now stale) memory.
+
+### Summary of all three strace captures
+
+| Crash | Job | Thread | Fault address | Relation to sigaltstack |
+| --- | --- | --- | --- | --- |
+| 1 | 71263554933 | 5963 | `0x7fd4600a7ff0` | 16 bytes below stack base (guard page) |
+| 2 | 71274405401 | 6652 | `0x7f9cf18d3ff0` | `0xff0` bytes into the stack (stale memory) |
+| 3 | 71286374586 | 6276 | `0x7fa5c4020b48` | `0x3b48` bytes below stack base (stale memory) |
+
+All three show the identical trigger sequence:
+
+1. Thread A exits → `sigaltstack(SS_DISABLE)` → `+++ exited with 0 +++`
+2. Thread B (Go M) receives `SIGRT_2` via `tgkill`
+3. Handler runs on the stale/freed sigaltstack memory
+4. `SIGSEGV (SEGV_ACCERR)` → nested `SIGSEGV (SI_KERNEL)` → process killed
+
+The three crashes together show the root cause is a **race in Go's M
+lifecycle**: one M thread exits and disables/frees its sigaltstack,
+but another M thread's signal handler still references the same memory
+(either because the new M inherited the old address, or because the
+signal was delivered during the narrow window between `SS_DISABLE` and
+the thread actually exiting).
 
 ### Correlation with concurrency
 
 The crash requires heavy concurrent cgo activity because:
 - More concurrent cgo calls → more Go M threads → more sigaltstacks.
-- More inter-M signaling (SIGRT_2 for work-stealing, goroutine handoff).
-- Higher chance that one SIGRT_2 handler call exceeds 16 KB on the alt
-  stack. The overflow depends on what the handler touches: Go's scheduler
-  state, goroutine context save, etc. Deeper scheduler call chains →
-  more stack usage → higher overflow probability.
+- More M threads exiting → more `sigaltstack(SS_DISABLE)` calls →
+  more windows where the stale memory can be hit.
+- More inter-M signaling (SIGRT_2 for work-stealing, goroutine handoff)
+  → more signals arriving during the vulnerable window.
 
 ### Fix
 
