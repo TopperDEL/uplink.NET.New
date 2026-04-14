@@ -216,11 +216,12 @@ public class AccessTests
         var disposeTask = Task.Run(context.Access.Dispose);
 
         await StorjTestHelper.WaitUntilAsync(
-            () => disposeTask.Status == TaskStatus.Running && !disposeTask.IsCompleted,
+            () => disposeTask.Status == TaskStatus.Running,
             TimeSpan.FromSeconds(5),
             "Dispose should stay blocked while the active native project lease is held.");
 
         projectLease.Dispose();
         await disposeTask;
+        Assert.True(disposeTask.IsCompletedSuccessfully);
     }
 }
