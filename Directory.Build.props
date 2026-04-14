@@ -1,0 +1,28 @@
+<Project>
+
+  <!--
+    Repo-wide build defaults. Currently used to enable a stricter analyzer
+    baseline so that .NET's built-in code-quality, threading, and IDisposable
+    rules surface as warnings on every project (no extra package install).
+
+    Per-project files (e.g. src/uplink.NET/uplink.NET.csproj) layer on
+    additional analyzer NuGet packages where the rules are most relevant.
+
+    NOTE: warnings are not promoted to errors here on purpose. We want to
+    *see* the new findings without breaking the build until they're triaged.
+  -->
+
+  <PropertyGroup>
+    <!-- Use the analyzer ruleset shipped with the latest .NET SDK in use. -->
+    <AnalysisLevel>latest</AnalysisLevel>
+    <!-- Recommended turns on the curated set of useful rules without going
+         to the noisy "All" tier. -->
+    <AnalysisMode>Recommended</AnalysisMode>
+    <!-- Built-in CA* analyzers are on by default in modern SDKs; make it
+         explicit so it stays on if defaults change. -->
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <!-- Run analyzer-driven code-style checks during build (default is IDE-only). -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+</Project>

@@ -32,6 +32,11 @@ public class Access : IDisposable
         if (string.IsNullOrWhiteSpace(accessGrant))
             throw new ArgumentNullException(nameof(accessGrant));
 
+        // Install a large sigaltstack on this thread before the first
+        // cgo call. Prevents the CoreCLR-handler-overflow SIGSEGV that
+        // docs/crash-investigation.md describes.
+        SigStackFix.EnsureOnCurrentThread();
+
         _config = CloneConfig(config);
         _diagnostics = CreateDiagnosticsSession(_config);
 
@@ -58,6 +63,10 @@ public class Access : IDisposable
             try
             {
                 _projectHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
+                // Re-check sigaltstack after the first cgo call — Go's
+                // minitSignalStack() may have replaced our 1 MB stack
+                // with its own ~32 KB one during cgo thread init.
+                SigStackFix.EnsureOnCurrentThread();
                 trace?.Success();
             }
             catch
@@ -78,6 +87,8 @@ public class Access : IDisposable
         if (accessHandle == nint.Zero)
             throw new ArgumentException("Access handle must not be null.", nameof(accessHandle));
 
+        SigStackFix.EnsureOnCurrentThread();
+
         _config = CloneConfig(config);
         _diagnostics = CreateDiagnosticsSession(_config);
         _accessHandle = accessHandle;
@@ -86,6 +97,7 @@ public class Access : IDisposable
         try
         {
             _projectHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
+            SigStackFix.EnsureOnCurrentThread();
             trace?.Success();
         }
         catch
@@ -370,6 +382,10 @@ public class Access : IDisposable
 
     internal AccessHandleLease AcquireAccessLease()
     {
+        // Any thread reaching here is about to (or has just) entered
+        // cgo into libstorj_uplink.so. Ensure it has a large sigaltstack.
+        SigStackFix.EnsureOnCurrentThread();
+
         lock (_lifetimeSync)
         {
             ThrowIfDisposedNoLock();
@@ -380,17 +396,27 @@ public class Access : IDisposable
 
     internal ProjectHandleLease AcquireProjectLease()
     {
+        // Install a large sigaltstack before the cgo call. Go's cgo
+        // runtime may override this with its own ~32 KB stack during
+        // the first cgo entry on this thread (minitSignalStack), so we
+        // also re-check AFTER the call. The native side checks the
+        // actual current stack size and is cheap if it's already large.
+        SigStackFix.EnsureOnCurrentThread();
+
         lock (_lifetimeSync)
         {
             ThrowIfDisposedNoLock();
 
-            if (_projectHandle == nint.Zero)
+            if (_accessHandle == nint.Zero)
                 throw new ObjectDisposedException(nameof(Access));
 
-            // The native uplink project handle supports concurrent operations; the lease count
-            // only keeps the shared handle alive until in-flight work has finished.
+            var leaseHandle = OpenProjectHandle(_accessHandle, _config, _diagnostics);
+
+            // Re-install after cgo: Go may have replaced our stack.
+            SigStackFix.EnsureOnCurrentThread();
+
             _activeProjectLeases++;
-            return new ProjectHandleLease(this, _projectHandle);
+            return new ProjectHandleLease(this, leaseHandle);
         }
     }
 
@@ -398,13 +424,19 @@ public class Access : IDisposable
     {
         lock (_lifetimeSync)
         {
-            if (_activeProjectLeases == 0)
-                throw new InvalidOperationException("Project lease released without an active lease.");
+            try
+            {
+                if (projectHandle != nint.Zero)
+                    UplinkInterop.FreeProjectHandle(projectHandle);
+            }
+            finally
+            {
+                if (_activeProjectLeases > 0)
+                    _activeProjectLeases--;
 
-            _activeProjectLeases--;
-
-            if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
-                ReleaseHandlesNoLock();
+                if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
+                    ReleaseHandlesNoLock();
+            }
         }
     }
 

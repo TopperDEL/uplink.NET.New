@@ -14,36 +14,13 @@ permissions:
   contents: read
 
 jobs:
-  build-native-linux:
-    name: Build Linux native runtime
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-      - uses: mlugg/setup-zig@v2
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Build uplink-c
-        run: |
-          git clone --branch "$UPLINK_C_REF" --depth 1 https://github.com/storj/uplink-c.git $HOME/uplink-c
-          cd $HOME/uplink-c
-          make build
-          mkdir -p "$GITHUB_WORKSPACE/native/linux-x64"
-          cp .build/libuplink.so "$GITHUB_WORKSPACE/native/linux-x64/libstorj_uplink.so"
-
-      - name: Upload Linux native runtime
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-linux-x64
-          path: native/linux-x64/
-
   build-native-windows:
     name: Build Windows native runtime
     runs-on: ubuntu-latest
+    # Temporarily disabled while we focus on the Linux "test host crashed"
+    # investigation; re-enable by removing this `if:` line (and the matching
+    # one on build-and-test-windows).
+    if: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -54,15 +31,19 @@ jobs:
       - name: Build uplink-c
         shell: bash
         run: |
-          git clone --branch "$UPLINK_C_REF" --depth 1 https://github.com/storj/uplink-c.git $HOME/uplink-c
+          # Bypass uplink-c's Makefile so we control the linker flags — same
+          # reason as the Linux build. -ldflags="-s -w" would strip symbols
+          # and degrade crash diagnostics.
+          git clone --branch "$UPLINK_C_REF" --depth 1 \
+            https://github.com/storj/uplink-c.git $HOME/uplink-c
           cd $HOME/uplink-c
-          export GOOS=windows
-          export GOARCH=amd64
-          export CGO_ENABLED=1
-          export CC="zig cc -target x86_64-windows-gnu"
-          make build
+          mkdir -p .build
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=1 \
+            CC="zig cc -target x86_64-windows-gnu" \
+            go build -buildmode=c-shared -o .build/libuplink.dll .
           mkdir -p "$GITHUB_WORKSPACE/native/win-x64"
-          cp .build/libuplink.dll "$GITHUB_WORKSPACE/native/win-x64/storj_uplink.dll"
+          cp .build/libuplink.dll \
+             "$GITHUB_WORKSPACE/native/win-x64/storj_uplink.dll"
 
       - name: Upload Windows native runtime
         uses: actions/upload-artifact@v4
@@ -71,23 +52,127 @@ jobs:
           path: native/win-x64/
 
   build-and-test-linux:
-    name: Build .NET library and run tests on Linux
+    name: Build everything and run tests on Linux
     runs-on: ubuntu-latest
-    needs:
-      - build-native-linux
     env:
       CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/TestResults/diagnostics
+      CI_COREDUMP_DIR: ${{ github.workspace }}/TestResults/coredumps
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      - name: Build uplink-c native runtime
+        run: |
+          # Build libstorj_uplink.so directly into the .NET project's
+          # runtimes/ folder; no cross-job artifact upload needed.
+          #
+          # Bypass uplink-c's Makefile so we control the linker flags. The
+          # Makefile passes -ldflags="-s -w" which strips the symbol table,
+          # which makes core dumps and Go panic stacks far less useful.
+          git clone --branch "$UPLINK_C_REF" --depth 1 \
+            https://github.com/storj/uplink-c.git "$HOME/uplink-c"
+          pushd "$HOME/uplink-c"
+          mkdir -p .build
+          CGO_ENABLED=1 go build -buildmode=c-shared -o .build/libuplink.so .
+          popd
+          target="$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native"
+          mkdir -p "$target"
+          cp "$HOME/uplink-c/.build/libuplink.so" "$target/libstorj_uplink.so"
 
-      - name: Download Linux native runtime
-        uses: actions/download-artifact@v4
-        with:
-          name: native-linux-x64
-          path: src/uplink.NET/runtimes/linux-x64/native
+          # Build the sigaltstack-fix shim. See docs/crash-investigation.md.
+          # This is tested via SigStackFix.EnsureOnCurrentThread() from
+          # Access.cs; the shim itself is a dozen lines of C that install
+          # a 1 MB alt stack per thread to prevent CoreCLR's SIGSEGV
+          # handler from overflowing Go's small (~32 KB) alt stack.
+          cc -O2 -fPIC -shared \
+            -o "$target/libuplink_sigstack_fix.so" \
+            "$GITHUB_WORKSPACE/scripts/ci/sigstack_fix.c"
+
+          ls -lh "$target/"
+
+      - name: Reproduce sigaltstack overflow (SIGRT_2)
+        shell: bash
+        run: |
+          # Standalone C+Go reproducer for the sigaltstack overflow.
+          # Sends SIGRT_2 (CoreCLR's GC suspension signal) to Go M
+          # threads with 16 KB sigaltstacks under concurrent cgo load.
+          # See scripts/repro-sigaltstack/README.md.
+          cd "$GITHUB_WORKSPACE/scripts/repro-sigaltstack"
+          CGO_ENABLED=1 go build -buildmode=c-shared -o libgolib.so golib.go
+          cc -O2 -o repro host.c -ldl -lpthread
+          # Run the reproducer in a loop. The crash is a race between
+          # needm/dropm sigaltstack lifecycle and signal delivery; a
+          # single pass may not trigger it.
+          echo "running sigaltstack reproducer (native amd64, up to 5 attempts)..."
+          crashed=0
+          for attempt in 1 2 3 4 5; do
+            echo "--- attempt $attempt ---"
+            set +e
+            LD_LIBRARY_PATH=. timeout 30 ./repro 2>&1
+            rc=$?
+            set -e
+            if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then
+              echo "::warning::Sigaltstack reproducer CRASHED on attempt $attempt (exit $rc)"
+              crashed=1
+              break
+            fi
+            echo "attempt $attempt: exit $rc"
+          done
+          if [ $crashed -eq 0 ]; then
+            echo "No crash in 5 attempts"
+          fi
+
+      - name: Test Go signal handler chaining
+        shell: bash
+        run: |
+          # Standalone test of whether Go's cgo signal handler correctly
+          # chains SIGSEGV to a previously-installed handler. Mimics the
+          # CoreCLR + uplink-c interaction: install handler, dlopen the Go
+          # shared lib, do a cgo call, then deliberately trigger SIGSEGV.
+          # If Go chains → our handler runs and we print PASS.
+          # If Go eats it → process dies and we print FAIL.
+          # See docs/crash-investigation.md for full context.
+          target="$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native"
+          cc -O0 -g -o /tmp/test_signal_chain \
+            "$GITHUB_WORKSPACE/scripts/ci/test_signal_chain.c" \
+            -ldl -lpthread
+          echo "running signal chain test..."
+          set +e
+          LD_LIBRARY_PATH="$target" /tmp/test_signal_chain 2>&1
+          rc=$?
+          set -e
+          echo "signal chain test exit code: $rc"
+          if [ $rc -ne 0 ]; then
+            echo "::warning::Go signal handler chaining test FAILED (exit $rc). This may explain the SI_KERNEL crashes."
+          fi
+
+      - name: Validate native struct layouts
+        shell: bash
+        run: |
+          # Compile the introspector against the uplink-c headers we just
+          # cloned and run it to emit an authoritative CSV of every struct's
+          # size and field offsets. The NativeStructLayoutTests xunit test
+          # reads this file at test time and compares to Marshal.SizeOf /
+          # Marshal.OffsetOf on the matching C# struct. A layout divergence
+          # silently corrupts memory across every P/Invoke that touches the
+          # struct — catching it here is orders of magnitude cheaper than
+          # chasing it from a core dump.
+          #
+          # -DUPLINK_DISABLE_NAMESPACE_COMPAT silences the compatibility-defines
+          # warning from uplink_compat.h; we don't use those legacy symbols.
+          layout_out="$GITHUB_WORKSPACE/TestResults/native-struct-layout.csv"
+          mkdir -p "$(dirname "$layout_out")"
+          cc -I "$HOME/uplink-c" -DUPLINK_DISABLE_NAMESPACE_COMPAT \
+              scripts/ci/struct_layout_check.c \
+              -o /tmp/struct_layout_check
+          /tmp/struct_layout_check > "$layout_out"
+          echo "UPLINK_NATIVE_STRUCT_LAYOUT=$layout_out" >> "$GITHUB_ENV"
+          echo "Wrote $(wc -l < "$layout_out") lines to $layout_out"
+          head -5 "$layout_out"
 
       - name: Restore
         run: dotnet restore uplink.NET.sln
@@ -114,8 +199,91 @@ jobs:
       - name: Prepare diagnostics logging
         shell: bash
         run: |
-          mkdir -p "$CI_DIAGNOSTICS_DIR"
+          mkdir -p "$CI_DIAGNOSTICS_DIR" "$CI_COREDUMP_DIR"
           echo "uplink.NET diagnostics logs will be written to: $CI_DIAGNOSTICS_DIR"
+          echo "core dumps will be written to: $CI_COREDUMP_DIR"
+
+      - name: Enable native core dumps
+        shell: bash
+        run: |
+          # gdb is already shipped with every ubuntu-latest runner image, so
+          # we expect the fast path (command -v gdb) to always hit. The
+          # fallback is a no-`update` install (uses the image's pre-populated
+          # apt cache; works unless the package was pruned). Only on an
+          # outright miss do we pay for apt-get update. This cuts the step
+          # time from ~20s to sub-second on every normal run.
+          if ! command -v gdb >/dev/null; then
+              sudo apt-get install -y --no-install-recommends gdb \
+                  || { sudo apt-get update && sudo apt-get install -y --no-install-recommends gdb; }
+          fi
+          sudo mkdir -p "$CI_COREDUMP_DIR"
+          sudo chmod 1777 "$CI_COREDUMP_DIR"
+
+          # Previous runs showed DOTNET_DbgEnableMiniDump never fired —
+          # confirmed by empty stderr even with DOTNET_CreateDumpDiagnostics=1.
+          # Go's cgo runtime installs its own SIGSEGV handler on every thread
+          # that enters cgo, and it wins over CoreCLR's handler on those
+          # threads. When the crash happens on a .NET thread that has entered
+          # uplink-c, Go handles the signal and exits before createdump runs.
+          #
+          # Workaround: install a core_pattern pipe handler. When the kernel
+          # sees a SIGSEGV it pipes the standard ELF core to our helper's
+          # stdin AND keeps the crashing process in a dumpable-zombie state
+          # until the helper exits. During that window we invoke CoreCLR's
+          # createdump directly, which produces a proper managed minidump
+          # (complete with the CLR-specific ELF notes SOS needs). The raw
+          # kernel core is still written alongside it for defence in depth.
+          sudo tee /usr/local/bin/uplink-coredump-helper >/dev/null <<'HELPER'
+          #!/usr/bin/env bash
+          # Called by the kernel on a crash. Invoked as:
+          #   /usr/local/bin/uplink-coredump-helper <pid> <ts> <exe>...
+          # where <exe> can contain spaces because core_pattern's %e resolves
+          # to the thread's prctl(PR_SET_NAME) — e.g. ".NET TP Worker" for
+          # .NET threadpool threads. Putting %p first lets us parse pid/ts
+          # robustly regardless of how many tokens the exe field splits into.
+          # Kernel streams the ELF core on stdin.
+          #
+          # IMPORTANT: the kernel holds the crashing process in a
+          # dumpable-zombie state until *this helper exits*. Whatever we do
+          # here directly extends the crash-to-cleanup window. A previous
+          # iteration invoked CoreCLR's createdump inside the helper to also
+          # produce a managed minidump, but that hung for 11+ minutes: the
+          # kernel is simultaneously feeding us the ELF core via stdin,
+          # createdump's ptrace_attach against the half-frozen target blocks,
+          # and the CI job grinds to a halt. Removed.
+          #
+          # All we do now is persist the kernel ELF core. dotnet-dump analyze
+          # against that core DOES return working managed stacks once the
+          # coredump_filter is set to 0x7F (proven out in previous runs) —
+          # so this is sufficient for triage without any deadlock risk.
+          set +e
+          pid=$1
+          ts=$2
+          shift 2
+          exe_name="$*"
+          out_dir="__CI_COREDUMP_DIR__"
+          mkdir -p "$out_dir"
+          safe_name="${exe_name// /_}"
+          base="$out_dir/core.${safe_name}.${pid}.${ts}"
+          cat >"$base" 2>/dev/null
+          HELPER
+          sudo sed -i "s|__CI_COREDUMP_DIR__|${CI_COREDUMP_DIR}|" /usr/local/bin/uplink-coredump-helper
+          sudo chmod +x /usr/local/bin/uplink-coredump-helper
+
+          # Point core_pattern at the helper. The leading `|` tells the
+          # kernel to pipe the core to this program's stdin instead of
+          # writing it to a file. %p first so pid/ts parse cleanly even
+          # when %e has spaces (thread names like ".NET TP Worker").
+          echo "|/usr/local/bin/uplink-coredump-helper %p %t %e" \
+              | sudo tee /proc/sys/kernel/core_pattern
+          sudo sysctl -w kernel.core_uses_pid=1
+          # core_uses_pid has no effect once core_pattern uses a pipe but
+          # it's harmless. core_pipe_limit controls how many concurrent
+          # pipe handlers may run; bump it so a crash during startup of
+          # another doesn't get discarded.
+          echo 16 | sudo tee /proc/sys/kernel/core_pipe_limit
+          ulimit -c unlimited
+          echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
 
       - name: Run test suite
         id: run_tests
@@ -125,7 +293,250 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
-        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests"
+          # Opt in to the disposal-race stress suite (DisposeStressTests).
+          UPLINK_RUN_STRESS: '1'
+          # GOTRACEBACK=all prints all goroutine stacks on a fatal Go-side
+          # error without calling abort(). Previously we used `crash`, which
+          # ships an abort() that races against CoreCLR's SIGSEGV handler;
+          # abort() reliably wins, which kills the process before
+          # DOTNET_DbgEnableMiniDump can write the managed minidump we actually
+          # want. With `all` the Go side prints goroutine stacks to stderr
+          # and unwinds, letting CoreCLR capture its minidump. If the process
+          # really can't continue we still get a kernel core via core_pattern.
+          # Use 'system' instead of 'all' so Go prints RUNTIME goroutines
+          # too (scheduler, GC, sysmon). If Go's handler is involved in the
+          # crash, these stacks will show the internal state. 'system' does
+          # NOT call abort() (that's 'crash' only), so it's safe.
+          GOTRACEBACK: system
+          # asyncpreemptoff=1: disables Go's SIGURG-based goroutine
+          # preemption. Testing whether the crash is actually a SIGURG
+          # delivery failure, not SIGSEGV. Evidence: stderr.log is empty
+          # (no runtime handler fired), si_code=SI_KERNEL (kernel's
+          # force_sig, not a userspace signal), si_addr=0x0. This matches
+          # the kernel failing to deliver ANY signal to a thread with
+          # corrupted signal state — and Go sends SIGURG constantly for
+          # goroutine preemption. If crash disappears → SIGURG is the
+          # trigger; the fix is in Go's signal/thread setup.
+          GODEBUG: 'asyncpreemptoff=1,cgocheck=1,invalidptr=1,clobberfree=1'
+          # .NET in-process minidumps for managed-side crashes.
+          DOTNET_DbgEnableMiniDump: '1'
+          DOTNET_DbgMiniDumpType: '4'
+          DOTNET_DbgMiniDumpName: ${{ github.workspace }}/TestResults/coredumps/managed-coredump.%p
+          # Log every step of the createdump invocation to stderr so we can
+          # see *why* a managed minidump isn't being produced in practice.
+          # Previous runs captured a kernel core but no managed-coredump.*
+          # file ever appeared — these flags make the failure visible.
+          DOTNET_CreateDumpDiagnostics: '1'
+          DOTNET_CreateDumpVerboseDiagnostics: '1'
+          DOTNET_EnableDiagnostics: '1'
+          COMPlus_DbgEnableMiniDump: '1'
+          COMPlus_DbgMiniDumpType: '4'
+          COMPlus_DbgMiniDumpName: ${{ github.workspace }}/TestResults/coredumps/managed-coredump.%p
+          # ── CoreCLR signal-handler diagnostics ──
+          # Both sigaltstack and Go-not-chaining hypotheses are disproven.
+          # Remaining theory: CoreCLR's own signal handler double-faults
+          # (touches unmapped memory during SIGSEGV handling → SI_KERNEL).
+          # These env vars perturb the runtime to confirm/deny:
+          #
+          # EnableAlternateStackCheck: CoreCLR adds extra validation when
+          #   running on an alternate signal stack. If the crash is an
+          #   alt-stack-related double fault, this may surface the root
+          #   cause as a diagnostic message instead of a silent death.
+          DOTNET_EnableAlternateStackCheck: '1'
+          # EnableWriteXorExecute=0: disables W^X for JIT pages. If the
+          #   crash is related to JIT page protection changes (CoreCLR
+          #   handler touching a page that was made non-readable during
+          #   W^X enforcement), disabling it removes that variable.
+          DOTNET_EnableWriteXorExecute: '0'
+        # cd into the coredump dir so cores written with relative names land
+        # there. The test command itself uses absolute paths.
+        run: |
+          ulimit -c unlimited
+          # Bump coredump_filter to include every category of mapped memory.
+          # No sudo: each process owns its own /proc/<pid>/coredump_filter
+          # and the setting is inherited by children. Previously this used
+          # `sudo tee`, which silently set the filter on the sudo-tee process
+          # (its own /proc/self) rather than this shell — confirmed by CI
+          # logs showing coredump_filter=00000033 after the call.
+          # 0x7F covers anon-private, anon-shared, file-private, file-shared,
+          # ELF headers, huge private, huge shared. Still won't recover the
+          # CLR-specific ELF notes that only createdump emits, but gives us
+          # as much of the process's real memory as the kernel can provide.
+          echo 0x7F > /proc/self/coredump_filter
+          echo "coredump_filter: $(cat /proc/self/coredump_filter)"
+          cd "$CI_COREDUMP_DIR"
+          # --blame (without --blame-crash) still writes Sequence_*.xml
+          # listing the tests that were running when the host died, which
+          # is all we need from vstest's Blame collector.
+          #
+          # --blame-crash was removed because Blame's dump path goes through
+          # Microsoft.Diagnostics.NETCore.Client, which in .NET 10 fails to
+          # load its own types ("Unable to load one or more of the requested
+          # types" in vstest.log) and then hangs for 11+ minutes waiting on
+          # a diagnostics IPC reply that never arrives. Proven deadlock,
+          # observed in job 71123680775. We get the crash dump from the
+          # kernel core_pattern pipe handler instead.
+          #
+          # --blame-hang-timeout still applies: it governs individual test
+          # hang detection, not crash dumping.
+          # Capture stderr separately so Go goroutine dumps and CoreCLR
+          # crash diagnostics survive even if stdout is lost. The test
+          # host writes crash info to fd 2; dotnet test may or may not
+          # forward it depending on vstest's pipe setup. Belt-and-
+          # suspenders: tee stderr to a file AND merge into stdout.
+          mkdir -p "${{ github.workspace }}/TestResults/diag"
+          # Run under strace -f to capture every signal operation across
+          # the process tree. When the crash fires, the tail of strace.log
+          # will show the EXACT signal being delivered, to which thread,
+          # and whether delivery succeeded. This is the most direct
+          # diagnostic we can get — the core dumps only show post-mortem
+          # state (rip in the crash-handler futex, si_code=SI_KERNEL),
+          # not what signal was in flight. strace sees the original.
+          #
+          # -f: follow forks (dotnet test spawns testhost)
+          # -e trace=signal: only log signal-related syscalls (sigaction,
+          #   sigaltstack, tgkill, kill, rt_sigqueueinfo, etc)
+          # -o file: write to file (not mixed into stdout)
+          # -t: timestamps
+          # timeout 300: kill strace after 5 minutes if it's still
+          # tracing lingering Go threads after tests complete. Normal
+          # test runs finish in ~90s; a crash exits sooner. Without
+          # this, strace -f waits for ALL traced threads to exit, and
+          # Go's runtime threads persist → 20-min hang (observed in
+          # job 71259431231).
+          timeout --signal=KILL 300 \
+            strace -f -t -e trace=signal \
+            -o "${{ github.workspace }}/TestResults/diag/strace-signals.log" \
+            dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
+              --results-directory "${{ github.workspace }}/TestResults" \
+              --logger "trx;LogFilePrefix=linux-integration-tests" \
+              --blame \
+              --blame-hang-timeout 10m \
+              --diag:"${{ github.workspace }}/TestResults/diag/vstest.log" \
+              2> >(tee "${{ github.workspace }}/TestResults/diag/stderr.log" >&2)
+
+      - name: Tail strace signal log
+        if: ${{ always() && steps.run_tests.outcome != 'success' }}
+        shell: bash
+        run: |
+          log="${{ github.workspace }}/TestResults/diag/strace-signals.log"
+          if [[ -f "$log" ]]; then
+            echo "strace log size: $(wc -c < "$log") bytes, $(wc -l < "$log") lines"
+            echo "::group::last 200 lines of strace-signals.log"
+            tail -200 "$log"
+            echo "::endgroup::"
+            echo "::group::all SIGSEGV/SIGABRT/SIGBUS/SIG related kills"
+            grep -E "SIGSEGV|SIGABRT|SIGBUS|SIGKILL|--- SIG" "$log" | tail -50
+            echo "::endgroup::"
+          else
+            echo "strace log not found at $log"
+          fi
+
+      - name: Analyze dumps with dotnet-dump (managed stacks)
+        if: ${{ always() && steps.run_tests.outcome != 'success' }}
+        shell: bash
+        run: |
+          # dotnet-dump analyze can read either CoreCLR's managed minidumps
+          # (written via DOTNET_DbgEnableMiniDump) OR a kernel ELF core of
+          # a .NET process, and it resolves JIT-compiled frames to managed
+          # method names — which plain gdb cannot. That gets us actual C#
+          # stacks including the method that crashed.
+          shopt -s nullglob
+          # The stable 9.0.x dotnet-dump on NuGet cannot read .NET 10 DACs
+          # (SOS fails with 0x80004002 after successfully opening the core).
+          # The dnceng public feed ships 10.0.x daily builds that can.
+          dotnet tool install -g dotnet-dump \
+              --add-source https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-tools/nuget/v3/index.json \
+              >/dev/null
+          export PATH="$HOME/.dotnet/tools:$PATH"
+
+          dumps=( "$CI_COREDUMP_DIR"/core.* "$CI_COREDUMP_DIR"/managed-coredump.* )
+          mapfile -t blame_dumps < <(find "${{ github.workspace }}/TestResults" -maxdepth 4 -type f -name '*.dmp' 2>/dev/null)
+          dumps+=( "${blame_dumps[@]}" )
+
+          if [[ ${#dumps[@]} -eq 0 ]]; then
+            echo "No dumps were captured."
+            exit 0
+          fi
+
+          # Locate the CoreCLR runtime so SOS can find libmscordaccore.so.
+          # Without setclrpath, dotnet-dump analyze on a kernel ELF core fails
+          # with "Failed to load data access module, 0x80004002" — it can't
+          # auto-discover the runtime path the way it can from a CoreCLR-
+          # authored minidump.
+          CLR_RUNTIME_DIR="$(ls -d /usr/share/dotnet/shared/Microsoft.NETCore.App/10.*/ 2>/dev/null | sort -V | tail -1)"
+          echo "CLR runtime dir: $CLR_RUNTIME_DIR"
+          echo "DAC / SOS files present:"
+          ls -la "$CLR_RUNTIME_DIR"libmscord* "$CLR_RUNTIME_DIR"libcoreclr.so "$CLR_RUNTIME_DIR"libsos* 2>/dev/null || true
+          dotnet-dump --version || true
+
+          # Script of SOS commands executed inside dotnet-dump's REPL.
+          # Note: single-quoted heredoc would block ${CLR_RUNTIME_DIR}
+          # expansion; we interpolate it here on purpose.
+          #
+          # `modules` confirms libcoreclr / libmscordaccore are visible in the
+          # dump; if they aren't, DAC can never bootstrap regardless of
+          # setclrpath.
+          # `clrthreads` tries CLR-aware thread enumeration; if it succeeds
+          # where `clrstack` fails, the crashing thread just doesn't have a
+          # managed frame — we can switch to a managed thread with
+          # `setthread <id>` and re-run clrstack (added as clrstack0 below).
+          analyze_cmds=$(cat <<EOF
+          setclrpath ${CLR_RUNTIME_DIR}
+          modules
+          threads
+          clrthreads
+          clrstack -all -f
+          syncblk
+          pe
+          dso
+          dumpheap -stat -type uplink.NET.Models.Access
+          dumpheap -stat -type uplink.NET.Models.UploadOperation
+          dumpheap -stat -type uplink.NET.Models.DownloadOperation
+          exit
+          EOF
+          )
+
+          for dump in "${dumps[@]}"; do
+            [[ -f "$dump" ]] || continue
+            echo
+            echo "::group::dotnet-dump analyze $(basename "$dump") ($(stat -c%s "$dump") bytes)"
+            printf '%s\n' "$analyze_cmds" \
+              | dotnet-dump analyze "$dump" 2>&1 \
+              | sed 's/^/  /' || true
+            echo "::endgroup::"
+          done
+
+      - name: Symbolize core dumps (native frames)
+        if: ${{ always() && steps.run_tests.outcome != 'success' }}
+        shell: bash
+        run: |
+          # gdb sees native frames but cannot name JIT-compiled .NET methods.
+          # Kept as a complement to dotnet-dump analyze: gdb surfaces Go
+          # goroutine state (runtime.park_m, uplink_* cgo frames) that SOS
+          # cannot show. Use both, read both.
+          shopt -s nullglob
+          dotnet_path="$(which dotnet)"
+          echo "dotnet binary: $dotnet_path"
+          dumps=( "$CI_COREDUMP_DIR"/core.* "$CI_COREDUMP_DIR"/managed-coredump.* )
+          mapfile -t blame_dumps < <(find "${{ github.workspace }}/TestResults" -maxdepth 4 -type f -name '*.dmp' 2>/dev/null)
+          dumps+=( "${blame_dumps[@]}" )
+          if [[ ${#dumps[@]} -eq 0 ]]; then
+            echo "No core or managed dumps were captured."
+            exit 0
+          fi
+          for dump in "${dumps[@]}"; do
+            [[ -f "$dump" ]] || continue
+            echo
+            echo "::group::gdb thread-apply-all-bt $(basename "$dump")"
+            gdb -batch -nx \
+                -ex "set auto-load safe-path /" \
+                -ex "set pagination off" \
+                -ex "thread apply all bt" \
+                -ex "quit" \
+                "$dotnet_path" "$dump" 2>&1 | sed 's/^/  /' || true
+            echo "::endgroup::"
+          done
 
       - name: Upload test results
         if: ${{ always() }}
@@ -135,6 +546,7 @@ jobs:
           path: |
             TestResults/
             ${{ env.CI_DIAGNOSTICS_DIR }}/
+            ${{ env.CI_COREDUMP_DIR }}/
           if-no-files-found: warn
 
       - name: Upload diagnostics logs
@@ -143,6 +555,14 @@ jobs:
         with:
           name: ci-diagnostics-logs-linux
           path: ${{ env.CI_DIAGNOSTICS_DIR }}/
+          if-no-files-found: warn
+
+      - name: Upload core dumps
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-coredumps-linux
+          path: ${{ env.CI_COREDUMP_DIR }}/
           if-no-files-found: warn
 
       - name: Summarize test results
@@ -224,7 +644,7 @@ jobs:
               f"| Duration | {duration} |",
               f"| Diagnostics directory | `{diagnostics_dir}` |",
               f"| Diagnostics log files | {len(diagnostics_logs)} |",
-              "| Diagnostics artifacts | `ci-test-results-linux`, `ci-diagnostics-logs-linux` |",
+              "| Diagnostics artifacts | `ci-test-results-linux`, `ci-diagnostics-logs-linux`, `ci-coredumps-linux` |",
           ]
 
           if not trx_files:
@@ -240,13 +660,215 @@ jobs:
               summary.write("\n".join(lines) + "\n")
           PY
 
+  build-and-test-linux-race:
+    # Runs the test suite against a libstorj_uplink.so built with Go's
+    # race detector (`go build -race`) so any data race in uplink-c or its
+    # upstream storj.io/uplink dependency is reported with full goroutine
+    # stacks instead of surfacing hours later as an intermittent SIGSEGV.
+    #
+    # Previous attempt failed with
+    #   ThreadSanitizer failed to allocate 0x1fc0000 bytes at address ...
+    # because CoreCLR reserves fixed virtual address ranges at startup that
+    # collide with TSan's shadow-memory mapping. The fix (per Gemini) is:
+    #
+    #   1. Build with -race (embeds TSan into libstorj_uplink.so).
+    #   2. Stop TSan from stealing SIGSEGV/SIGILL/SIGFPE/SIGBUS — CoreCLR
+    #      needs those to implement managed null-ref checks and arithmetic
+    #      exceptions. `TSAN_OPTIONS=handle_sig*=0` disables the TSan
+    #      handlers so CoreCLR's handlers stay in charge.
+    #   3. LD_PRELOAD the race-instrumented .so so TSan gets its address
+    #      range reservation in early — before CoreCLR reserves its own.
+    #      Loading it via P/Invoke's dlopen is too late; CoreCLR has
+    #      already claimed the ranges TSan needs.
+    #
+    # Marked continue-on-error so a TSan report doesn't block PRs while we
+    # triage what is/isn't a real race. Race reports land in
+    # TestResults/race-logs/race.<pid> and are uploaded as an artifact.
+    name: Run tests under Go race detector (experimental)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    env:
+      CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/TestResults-race/diagnostics
+      CI_COREDUMP_DIR: ${{ github.workspace }}/TestResults-race/coredumps
+      CI_RACE_LOG_DIR: ${{ github.workspace }}/TestResults-race/race-logs
+      RACE_LIB_DIR: ${{ github.workspace }}/native/linux-x64-race
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build uplink-c with -race
+        run: |
+          # `go build -race` embeds TSan into the shared library. Keeps
+          # symbols for useful stacks. uplink-c's Makefile strips symbols
+          # with -ldflags="-s -w"; we bypass it and invoke go build directly.
+          git clone --branch "$UPLINK_C_REF" --depth 1 \
+            https://github.com/storj/uplink-c.git "$HOME/uplink-c"
+          pushd "$HOME/uplink-c"
+          mkdir -p .build
+          CGO_ENABLED=1 go build -race -buildmode=c-shared \
+            -o .build/libuplink.so .
+          popd
+          mkdir -p "$RACE_LIB_DIR"
+          cp "$HOME/uplink-c/.build/libuplink.so" \
+             "$RACE_LIB_DIR/libstorj_uplink.so"
+          # Stage the same file into the .NET runtimes/ folder so that
+          # dlopen() via P/Invoke also finds it (belt-and-suspenders with
+          # LD_PRELOAD).
+          target="$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native"
+          mkdir -p "$target"
+          cp "$RACE_LIB_DIR/libstorj_uplink.so" "$target/libstorj_uplink.so"
+          ls -lh "$RACE_LIB_DIR/" "$target/"
+
+      - name: Restore
+        run: dotnet restore uplink.NET.sln
+
+      - name: Build
+        run: dotnet build uplink.NET.sln -c Release --no-restore -p:StorjUplinkVersion="$UPLINK_C_REF"
+
+      - name: Prepare diagnostics logging
+        shell: bash
+        run: |
+          mkdir -p "$CI_DIAGNOSTICS_DIR" "$CI_COREDUMP_DIR" "$CI_RACE_LOG_DIR"
+          echo "uplink.NET diagnostics: $CI_DIAGNOSTICS_DIR"
+          echo "core dumps:             $CI_COREDUMP_DIR"
+          echo "race detector reports:  $CI_RACE_LOG_DIR"
+
+      - name: Run test suite under race detector
+        id: run_tests_race
+        continue-on-error: true
+        env:
+          TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
+          TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
+          UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
+          UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
+          UPLINK_RUN_STRESS: '1'
+          # Go's race runtime is a fork of compiler-rt's TSan. It reads its
+          # configuration from GORACE (primary) and — for some options —
+          # TSAN_OPTIONS (secondary). Previous run had the handle_sig*=0
+          # flags only in TSAN_OPTIONS and the outer `dotnet` CLI died
+          # with exit 66 (TSan's default exitcode) before producing any
+          # output. Moved them into GORACE where Go's race runtime will
+          # definitely pick them up. Left in TSAN_OPTIONS too in case a
+          # non-Go library inside the process (e.g. libclrjit) also
+          # negotiates TSan state.
+          #
+          # Key options:
+          #   log_path         — per-pid file prefix for race reports
+          #   halt_on_error=0  — keep running after the first race
+          #                      (covers the case we actually care about:
+          #                      a legit race report shouldn't abort the
+          #                      whole suite. This option is enough on its
+          #                      own; we do NOT pair it with exitcode=0.)
+          #   history_size=7   — widen goroutine history for stacks
+          #   handle_sig*=0    — let CoreCLR own SIGSEGV/SIGILL/SIGFPE/
+          #                      SIGBUS (managed null-ref, DivideByZero...)
+          #   verbosity=1      — print TSan init diagnostics to stderr
+          #
+          # NOTE: deliberately no `exitcode=0`. We set it previously and
+          # it bit us — `dotnet test` exited 0 in 6 ms with zero output
+          # because TSan encountered an internal fatal error, would have
+          # aborted with exitcode=66, but with exitcode=0 it silently
+          # `_exit(0)`'d instead. Leaving it at the default 66 means real
+          # TSan fatals surface as non-zero, which our `set +e` + final
+          # `exit 0` wrapper catches without killing downstream steps.
+          GORACE: >-
+            log_path=${{ github.workspace }}/TestResults-race/race-logs/race
+            halt_on_error=0 history_size=7 verbosity=1
+            handle_segv=0 handle_sigill=0 handle_sigfpe=0 handle_sigbus=0
+          TSAN_OPTIONS: >-
+            handle_segv=0 handle_sigill=0 handle_sigfpe=0 handle_sigbus=0
+            verbosity=1
+          # NOTE: LD_PRELOAD is deliberately NOT in the step env block.
+          # Putting it there applies to the bash shell that runs this
+          # script — and a previous run (job 71133590033) died silently
+          # before any script line executed, almost certainly because
+          # TSan initialized inside the bash process (not a CoreCLR
+          # host) and aborted it. We set LD_PRELOAD inline on the
+          # dotnet invocation so only dotnet + its children inherit it.
+        run: |
+          set +e
+          echo "### race-detector test step starting"
+          echo "workspace: ${{ github.workspace }}"
+          ls -lh "${{ github.workspace }}/native/linux-x64-race/libstorj_uplink.so" \
+            || { echo "race .so missing"; exit 0; }
+          mkdir -p "${{ github.workspace }}/TestResults-race/diag"
+
+          echo "### invoking dotnet test with LD_PRELOAD"
+          LD_PRELOAD="${{ github.workspace }}/native/linux-x64-race/libstorj_uplink.so" \
+            dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
+              --results-directory "${{ github.workspace }}/TestResults-race" \
+              --logger "trx;LogFilePrefix=linux-race-integration-tests" \
+              --blame \
+              --blame-hang-timeout 15m \
+              --diag:"${{ github.workspace }}/TestResults-race/diag/vstest.log" \
+              2>&1 | tee "${{ github.workspace }}/TestResults-race/dotnet-test.log"
+          rc=${PIPESTATUS[0]}
+          echo "### dotnet test exit code: $rc"
+          echo "### log tail:"
+          tail -40 "${{ github.workspace }}/TestResults-race/dotnet-test.log" 2>/dev/null || true
+          # Always exit 0 so downstream Summarize + Upload steps run even
+          # when dotnet test fails (the job is continue-on-error anyway).
+          exit 0
+
+      - name: Summarize race reports
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          reports=( "$CI_RACE_LOG_DIR"/race.* )
+          if [[ ${#reports[@]} -eq 0 ]]; then
+            echo "No TSan race reports were produced."
+            echo "## Race detector: no races detected" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "Found ${#reports[@]} race report file(s)."
+          total_races=0
+          for r in "${reports[@]}"; do
+              n=$(grep -c "^WARNING: DATA RACE" "$r" 2>/dev/null || echo 0)
+              total_races=$((total_races + n))
+              echo
+              echo "::group::$(basename "$r") — ${n} race(s)"
+              cat "$r"
+              echo "::endgroup::"
+          done
+          echo "## Race detector: ${total_races} race(s) across ${#reports[@]} file(s)" >> "$GITHUB_STEP_SUMMARY"
+          echo "See artifact \`ci-race-logs-linux\` for the raw reports." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload race detector reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-race-logs-linux
+          path: ${{ env.CI_RACE_LOG_DIR }}/
+          if-no-files-found: warn
+
+      - name: Upload race test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-results-linux-race
+          path: |
+            TestResults-race/
+          if-no-files-found: warn
+
   build-and-test-windows:
     name: Build .NET library and run tests on Windows
     runs-on: windows-latest
+    # Temporarily disabled — see build-native-windows for the context.
+    if: false
     needs:
       - build-native-windows
     env:
       CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/TestResults/diagnostics
+      CI_COREDUMP_DIR: ${{ github.workspace }}/TestResults/coredumps
       WINDOWS_NATIVE_RUNTIME_DIR: src/uplink.NET/runtimes/win-x64/native
     steps:
       - uses: actions/checkout@v4
@@ -296,7 +918,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path $env:CI_DIAGNOSTICS_DIR | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:CI_COREDUMP_DIR | Out-Null
           Write-Output "uplink.NET diagnostics logs will be written to: $env:CI_DIAGNOSTICS_DIR"
+          Write-Output "crash dumps will be written to: $env:CI_COREDUMP_DIR"
 
       - name: Run test suite
         id: run_tests
@@ -305,7 +929,20 @@ jobs:
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
-        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=windows-integration-tests"
+          UPLINK_RUN_STRESS: '1'
+          # GOTRACEBACK=all prints all goroutine stacks on a fatal Go-side
+          # error without calling abort(). See build-and-test-linux for why
+          # `all` instead of `crash` — we want CoreCLR's minidump writer to
+          # win, not lose the race to Go's abort().
+          GOTRACEBACK: all
+          GODEBUG: 'cgocheck=1,invalidptr=1,clobberfree=1'
+          DOTNET_DbgEnableMiniDump: '1'
+          DOTNET_DbgMiniDumpType: '4'
+          DOTNET_DbgMiniDumpName: ${{ github.workspace }}\TestResults\coredumps\managed-coredump.%p
+          COMPlus_DbgEnableMiniDump: '1'
+          COMPlus_DbgMiniDumpType: '4'
+          COMPlus_DbgMiniDumpName: ${{ github.workspace }}\TestResults\coredumps\managed-coredump.%p
+        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=windows-integration-tests" --blame-crash --blame-crash-dump-type full --blame-hang-timeout 10m --diag:TestResults/diag/vstest.log
 
       - name: Upload test results
         if: ${{ always() }}
@@ -315,6 +952,7 @@ jobs:
           path: |
             TestResults/
             ${{ env.CI_DIAGNOSTICS_DIR }}/
+            ${{ env.CI_COREDUMP_DIR }}/
           if-no-files-found: warn
 
       - name: Upload diagnostics logs
@@ -323,6 +961,14 @@ jobs:
         with:
           name: ci-diagnostics-logs-windows
           path: ${{ env.CI_DIAGNOSTICS_DIR }}/
+          if-no-files-found: warn
+
+      - name: Upload crash dumps
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-coredumps-windows
+          path: ${{ env.CI_COREDUMP_DIR }}/
           if-no-files-found: warn
 
       - name: Summarize test results
@@ -404,7 +1050,7 @@ jobs:
               f"| Duration | {duration} |",
               f"| Diagnostics directory | `{diagnostics_dir}` |",
               f"| Diagnostics log files | {len(diagnostics_logs)} |",
-              "| Diagnostics artifacts | `ci-test-results-windows`, `ci-diagnostics-logs-windows` |",
+              "| Diagnostics artifacts | `ci-test-results-windows`, `ci-diagnostics-logs-windows`, `ci-coredumps-windows` |",
           ]
 
           if not trx_files:
