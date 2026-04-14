@@ -358,18 +358,12 @@ public class Access : IDisposable
     {
         lock (_lifetimeSync)
         {
-            if (_disposed)
+            if (_disposeRequested)
                 return;
 
             _disposeRequested = true;
 
-            if (disposing)
-            {
-                while (!_disposed && (_activeAccessLeases != 0 || _activeProjectLeases != 0))
-                    Monitor.Wait(_lifetimeSync);
-            }
-
-            if (!_disposed && _activeAccessLeases == 0 && _activeProjectLeases == 0)
+            if (_activeAccessLeases == 0 && _activeProjectLeases == 0)
                 ReleaseHandlesNoLock();
         }
     }
@@ -410,10 +404,7 @@ public class Access : IDisposable
             _activeProjectLeases--;
 
             if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
-            {
-                Monitor.PulseAll(_lifetimeSync);
                 ReleaseHandlesNoLock();
-            }
         }
     }
 
@@ -425,10 +416,7 @@ public class Access : IDisposable
                 _activeAccessLeases--;
 
             if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
-            {
-                Monitor.PulseAll(_lifetimeSync);
                 ReleaseHandlesNoLock();
-            }
         }
     }
 

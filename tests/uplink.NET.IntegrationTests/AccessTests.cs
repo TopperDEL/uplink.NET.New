@@ -201,7 +201,7 @@ public class AccessTests
     }
 
     [StorjIntegrationFact]
-    public async Task Dispose_WaitsForActiveProjectLease()
+    public async Task Dispose_ReturnsWhileProjectLeaseIsStillActive()
     {
         using var context = IntegrationTestEnvironment.CreateContext();
         var acquireProjectLeaseMethod = typeof(Access).GetMethod(
@@ -216,12 +216,13 @@ public class AccessTests
         var disposeTask = Task.Run(context.Access.Dispose);
 
         await StorjTestHelper.WaitUntilAsync(
-            () => disposeTask.Status == TaskStatus.Running,
+            () => disposeTask.IsCompleted,
             TimeSpan.FromSeconds(5),
-            "Dispose should stay blocked while the active native project lease is held.");
+            "Dispose should return even while the active native project lease is still held.");
+
+        Assert.True(disposeTask.IsCompletedSuccessfully);
+        Assert.Throws<ObjectDisposedException>(() => context.Access.Serialize());
 
         projectLease.Dispose();
-        await disposeTask;
-        Assert.True(disposeTask.IsCompletedSuccessfully);
     }
 }
