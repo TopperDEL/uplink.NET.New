@@ -389,9 +389,6 @@ public class Access : IDisposable
 
     private void ReleaseProjectLease(nint projectHandle)
     {
-        if (projectHandle != nint.Zero)
-            UplinkInterop.FreeProjectHandle(projectHandle);
-
         lock (_lifetimeSync)
         {
             if (_activeProjectLeases == 0)
@@ -399,6 +396,9 @@ public class Access : IDisposable
 
             _activeProjectLeases--;
         }
+
+        if (projectHandle != nint.Zero)
+            UplinkInterop.FreeProjectHandle(projectHandle);
     }
 
     private void ReleaseHandlesNoLock()
