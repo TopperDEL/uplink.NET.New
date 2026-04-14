@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using uplink.NET.Exceptions;
 using uplink.NET.IntegrationTests.Infrastructure;
@@ -197,5 +198,27 @@ public class AccessTests
         {
             await StorjTestHelper.DeleteObjectIfPresentAsync(parentObjectService, context.BucketName, objectKey);
         }
+    }
+
+    [StorjIntegrationFact]
+    public async Task Dispose_WaitsForActiveProjectLease()
+    {
+        using var context = IntegrationTestEnvironment.CreateContext();
+        var acquireProjectLeaseMethod = typeof(Access).GetMethod(
+            "AcquireProjectLease",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.NotNull(acquireProjectLeaseMethod);
+
+        using var projectLease = (IDisposable?)acquireProjectLeaseMethod!.Invoke(context.Access, null);
+        Assert.NotNull(projectLease);
+
+        var disposeTask = Task.Run(context.Access.Dispose);
+
+        await Task.Delay(200);
+        Assert.False(disposeTask.IsCompleted, "Dispose should wait until the active native project lease is released.");
+
+        projectLease.Dispose();
+        await disposeTask;
     }
 }

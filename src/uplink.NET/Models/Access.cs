@@ -99,10 +99,10 @@ public class Access : IDisposable
     /// <summary>Serialize this access grant so it can be stored or reused later.</summary>
     public string Serialize()
     {
-        ThrowIfDisposed();
+        using var accessLease = AcquireAccessLease();
 
         using var trace = Trace("uplink_access_serialize");
-        var result = UplinkInterop.uplink_access_serialize(_accessHandle);
+        var result = UplinkInterop.uplink_access_serialize(accessLease.Handle);
         try
         {
             if (result.error != nint.Zero)
@@ -358,12 +358,18 @@ public class Access : IDisposable
     {
         lock (_lifetimeSync)
         {
-            if (_disposeRequested)
+            if (_disposed)
                 return;
 
             _disposeRequested = true;
 
-            if (_activeAccessLeases == 0 && _activeProjectLeases == 0)
+            if (disposing)
+            {
+                while (!_disposed && (_activeAccessLeases != 0 || _activeProjectLeases != 0))
+                    Monitor.Wait(_lifetimeSync);
+            }
+
+            if (!_disposed && _activeAccessLeases == 0 && _activeProjectLeases == 0)
                 ReleaseHandlesNoLock();
         }
     }
@@ -404,7 +410,10 @@ public class Access : IDisposable
             _activeProjectLeases--;
 
             if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
+            {
+                Monitor.PulseAll(_lifetimeSync);
                 ReleaseHandlesNoLock();
+            }
         }
     }
 
@@ -416,7 +425,10 @@ public class Access : IDisposable
                 _activeAccessLeases--;
 
             if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
+            {
+                Monitor.PulseAll(_lifetimeSync);
                 ReleaseHandlesNoLock();
+            }
         }
     }
 
