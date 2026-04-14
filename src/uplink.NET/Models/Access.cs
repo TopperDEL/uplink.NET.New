@@ -394,11 +394,11 @@ public class Access : IDisposable
             if (_activeProjectLeases == 0)
                 throw new InvalidOperationException("Project lease released without an active lease.");
 
+            if (projectHandle != nint.Zero)
+                UplinkInterop.FreeProjectHandle(projectHandle);
+
             _activeProjectLeases--;
         }
-
-        if (projectHandle != nint.Zero)
-            UplinkInterop.FreeProjectHandle(projectHandle);
     }
 
     private void ReleaseHandlesNoLock()

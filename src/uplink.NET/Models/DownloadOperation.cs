@@ -66,8 +66,7 @@ public class DownloadOperation : IDisposable
                 var (downloadHandle, beginError) = BeginNativeDownload();
                 if (beginError != null)
                 {
-                    _projectLease?.Dispose();
-                    _projectLease = null;
+                    ReleaseProjectLease();
                     SetFailed(beginError);
                     return Task.CompletedTask;
                 }
@@ -136,11 +135,7 @@ public class DownloadOperation : IDisposable
         finally
         {
             UplinkInterop.FreeDownloadHandle(downloadHandle);
-            lock (_startSync)
-            {
-                _projectLease?.Dispose();
-                _projectLease = null;
-            }
+            ReleaseProjectLease();
         }
     }
 
@@ -231,6 +226,16 @@ public class DownloadOperation : IDisposable
             UplinkInterop.uplink_free_read_result(readResult);
         }
     }
+
+    private void ReleaseProjectLease()
+    {
+        lock (_startSync)
+        {
+            _projectLease?.Dispose();
+            _projectLease = null;
+        }
+    }
+
     private void SetFailed(string message)
     {
         Failed       = true;
