@@ -336,10 +336,76 @@ Go c-shared libraries are loaded into a CoreCLR process.
   rapid-create/dispose and dispose-mid-transfer patterns. Reproduces the
   crash more reliably than the regular suite.
 
+## Related upstream issues
+
+### Go runtime — signal handler + sigaltstack
+
+**Directly relevant to our crash:**
+
+- [go#43853](https://github.com/golang/go/issues/43853) — `morestack on
+  gsignal` due to g0 stack misattribution. When cgo is enabled, Go
+  estimates g0 stack bounds incorrectly, causing signal-handling functions
+  to run out of stack space. Closest match to our mechanism.
+- [go#60007](https://github.com/golang/go/issues/60007) — Signal
+  delivered on shallow g0 stack by TSan. TSan queues signals and delivers
+  them from the normal thread stack instead of the sigaltstack, causing
+  overflow. Same pattern as ours: "signal handler overflows its
+  designated stack."
+- [go#77588](https://github.com/golang/go/issues/77588) — "signal 27
+  received on thread with no signal stack" (February 2026, Go 1.25.7).
+  Current Go version, signal stack problems persist.
+- [go#7227](https://github.com/golang/go/issues/7227) — Crash when C
+  library resets sigaltstack/sigaction settings. Directly about
+  interaction between Go and another runtime modifying signal state.
+
+**Signal handler chaining / double-fault:**
+
+- [go#13978](https://github.com/golang/go/issues/13978) — `SIGSEGV
+  while handling SIGSEGV` — exactly our SI_KERNEL pattern (nested
+  SIGSEGV during handler execution).
+- [go#17641](https://github.com/golang/go/issues/17641) — `sigfwd`
+  calls C handlers with improper stack alignment, causing a second
+  SIGSEGV inside the first handler. Same class of double-fault.
+- [go#14899](https://github.com/golang/go/issues/14899) — c-shared
+  library's signal handler overrides the default handler.
+- [go#16468](https://github.com/golang/go/issues/16468) — "non-Go code
+  disabled sigaltstack" panic — Go detects another runtime modified the
+  sigaltstack.
+
+### .NET runtime — signal handler conflicts
+
+- [dotnet/runtime#43642](https://github.com/dotnet/runtime/issues/43642)
+  — "CoreCLR taking over signal handlers." Discusses signal handler
+  conflicts when CoreCLR coexists with other native runtimes.
+- [dotnet/runtime#12798](https://github.com/dotnet/runtime/issues/12798)
+  — "Possible crash relating to signal handling." CoreCLR's signal
+  handler interaction with third-party libraries.
+- [dotnet/runtime#99151](https://github.com/dotnet/runtime/issues/99151)
+  — Segmentation fault in libcoreclr since .NET 8. Signal handling
+  regression in newer .NET versions.
+- [dotnet/runtime#121581](https://github.com/dotnet/runtime/issues/121581)
+  — Crash/deadlock in CoreCLR's inject signal handler on Linux with
+  glibc ≥ 2.40. Shows CoreCLR's signal handler does non-async-safe work
+  that can crash.
+
+### Most useful for filing upstream
+
+[go#43853](https://github.com/golang/go/issues/43853) is the closest
+match — it describes Go's signal handler running out of stack space on
+the gsignal stack during cgo. Our strace evidence (SIGRT_2 → SEGV_ACCERR
+at guard page → SI_KERNEL) would be a strong data point for a new issue
+referencing it.
+
+[go#77588](https://github.com/golang/go/issues/77588) is the freshest
+(Go 1.25, February 2026) and shows the problem is actively present in
+the Go version we're using.
+
 ## References
 
 - `docs/crash-investigation.md` — this file.
 - `scripts/ci/struct_layout_check.c` — native layout baseline.
+- `scripts/ci/test_signal_chain.c` — standalone signal-chaining test.
+- `scripts/repro-sigaltstack/` — standalone C + Go reproducer.
 - `tests/uplink.NET.IntegrationTests/NativeStructLayoutTests.cs` —
   struct-layout assertion.
 - `tests/uplink.NET.IntegrationTests/DisposeStressTests.cs` — reliable
