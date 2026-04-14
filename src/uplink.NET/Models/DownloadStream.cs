@@ -1,38 +1,36 @@
-using System.IO;
-using uplink.NET.Native;
+using uplink.NET.Ipc;
 
 namespace uplink.NET.Models;
 
 /// <summary>
-/// Represents a readable stream backed by a native Storj download handle.
+/// Represents a readable stream backed by a download handle in the native worker process.
 /// </summary>
 public class DownloadStream : Stream
 {
     private readonly object _syncRoot = new();
     private readonly Access _access;
 
-    private nint _downloadHandle;
+    private long _downloadId;
     private Access.ProjectHandleLease? _projectLease;
     private readonly long _length;
     private long _position;
     private bool _disposed;
     private bool _endOfStream;
 
-    internal DownloadStream(nint downloadHandle, long length, Access.ProjectHandleLease projectLease, Access access)
+    internal DownloadStream(long downloadId, long length, Access.ProjectHandleLease projectLease, Access access)
     {
-        if (downloadHandle == nint.Zero)
-            throw new ArgumentException("A valid native download handle is required.", nameof(downloadHandle));
+        if (downloadId == 0)
+            throw new ArgumentException("A valid download ID is required.", nameof(downloadId));
         ArgumentNullException.ThrowIfNull(projectLease);
         ArgumentNullException.ThrowIfNull(access);
-        _access = access;
-
-        _downloadHandle = downloadHandle;
+        _access       = access;
+        _downloadId   = downloadId;
         _projectLease = projectLease;
-        _length = Math.Max(0, length);
+        _length       = Math.Max(0, length);
     }
 
-    public override bool CanRead => !_disposed;
-    public override bool CanSeek => false;
+    public override bool CanRead  => !_disposed;
+    public override bool CanSeek  => false;
     public override bool CanWrite => false;
 
     public override long Length
@@ -60,9 +58,7 @@ public class DownloadStream : Stream
         set => throw new NotSupportedException("Seeking is not supported.");
     }
 
-    public override void Flush()
-    {
-    }
+    public override void Flush() { }
 
     public override int Read(byte[] buffer, int offset, int count)
     {
@@ -88,12 +84,16 @@ public class DownloadStream : Stream
             if (_endOfStream)
                 return 0;
 
-            var (bytesRead, eof, error) = ReadChunk(_downloadHandle, buffer);
+            var (data, eof, error) = ReadChunkFromWorker(_downloadId, buffer.Length);
             if (error != null)
                 throw new IOException($"Failed to read from Storj download stream: {error}");
 
+            int bytesRead = data?.Length ?? 0;
             if (bytesRead > 0)
+            {
+                data!.AsSpan(0, Math.Min(bytesRead, buffer.Length)).CopyTo(buffer);
                 _position += bytesRead;
+            }
 
             if (eof || bytesRead == 0)
                 _endOfStream = true;
@@ -120,9 +120,7 @@ public class DownloadStream : Stream
     }
 
     public override Task<int> ReadAsync(
-        byte[] buffer,
-        int offset,
-        int count,
+        byte[] buffer, int offset, int count,
         CancellationToken cancellationToken)
         => ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
 
@@ -139,15 +137,25 @@ public class DownloadStream : Stream
     {
         lock (_syncRoot)
         {
-            if (_disposed)
-                return;
-
+            if (_disposed) return;
             _disposed = true;
 
-            if (_downloadHandle != nint.Zero)
+            if (_downloadId != 0)
             {
-                UplinkInterop.FreeDownloadHandle(_downloadHandle);
-                _downloadHandle = nint.Zero;
+                var id = _downloadId;
+                _downloadId = 0;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+                        {
+                            ["op"]          = "download_close",
+                            ["download_id"] = id
+                        }).ConfigureAwait(false);
+                    }
+                    catch { }
+                });
             }
 
             _projectLease?.Dispose();
@@ -159,46 +167,34 @@ public class DownloadStream : Stream
 
     ~DownloadStream() => Dispose(false);
 
-    private void ThrowIfDisposed()
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-    }
+    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 
-    private unsafe (int bytesRead, bool eof, string? error) ReadChunk(
-        nint handle,
-        Span<byte> buffer)
+    private static (byte[]? data, bool eof, string? error) ReadChunkFromWorker(long downloadId, int maxBytes)
     {
-        using var trace = _access.Trace("uplink_download_read", ("bufferLength", buffer.Length));
-        UplinkInterop.UplinkReadResult readResult;
-        fixed (byte* bufPtr = buffer)
-        {
-            readResult = UplinkInterop.uplink_download_read(
-                handle,
-                bufPtr,
-                (nuint)buffer.Length);
-        }
-
         try
         {
-            int bytesRead = (int)(nuint)readResult.bytes_read;
-            if (readResult.error != nint.Zero)
+            var result = NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
             {
-                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref readResult.error);
-                bool isEof = code == UplinkInterop.EndOfFileErrorCode
-                    || msg.Contains("EOF", StringComparison.OrdinalIgnoreCase);
-                if (isEof)
-                    trace?.Success("Reached EOF.");
-                else
-                    trace?.NativeError(msg, code);
-                return (bytesRead, isEof, isEof ? null : msg);
-            }
+                ["op"]          = "download_read",
+                ["download_id"] = downloadId,
+                ["max_bytes"]   = maxBytes
+            }).GetAwaiter().GetResult();
 
-            trace?.Success();
-            return (bytesRead, bytesRead == 0, null);
+            if (result.IsError)
+                return (null, false, result.ErrorMessage);
+
+            var dataB64   = result.Data.TryGetProperty("data_b64",  out var db) ? db.GetString() ?? string.Empty : string.Empty;
+            int bytesRead = result.Data.TryGetProperty("bytes_read", out var br) ? br.GetInt32() : 0;
+            bool eof      = result.Data.TryGetProperty("eof",        out var ef) && ef.GetBoolean();
+
+            if (bytesRead > 0 && !string.IsNullOrEmpty(dataB64))
+                return (Convert.FromBase64String(dataB64), eof, null);
+
+            return (Array.Empty<byte>(), eof || bytesRead == 0, null);
         }
-        finally
+        catch (Exception ex)
         {
-            UplinkInterop.uplink_free_read_result(readResult);
+            return (null, false, ex.Message);
         }
     }
 }

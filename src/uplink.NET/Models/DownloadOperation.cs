@@ -1,4 +1,4 @@
-using uplink.NET.Native;
+using uplink.NET.Ipc;
 
 namespace uplink.NET.Models;
 
@@ -11,7 +11,7 @@ public delegate void DownloadOperationEnded(DownloadOperation downloadOperation)
 /// </summary>
 public class DownloadOperation : IDisposable
 {
-    private const int ChunkSize = 80 * 1024; // 80 KB
+    private const int ChunkMaxBytes = 80 * 1024;
 
     private readonly Access _access;
     private readonly string _bucketName;
@@ -43,10 +43,10 @@ public class DownloadOperation : IDisposable
         string objectName,
         DownloadOptions options)
     {
-        _access = access;
-        _bucketName    = bucketName;
-        ObjectName     = objectName;
-        _options       = options;
+        _access     = access;
+        _bucketName = bucketName;
+        ObjectName  = objectName;
+        _options    = options;
     }
 
     public Task? StartDownloadAsync()
@@ -77,56 +77,92 @@ public class DownloadOperation : IDisposable
         Running       = true;
         BytesReceived = 0;
 
-        // Open download outside unsafe/async boundary
-        var (downloadHandle, beginError) = BeginNativeDownload();
-        if (beginError != null)
-        {
-            SetFailed(beginError);
-            return;
-        }
-
-        // Determine total bytes
-        TotalBytes = GetTotalBytes(downloadHandle);
-
         try
         {
-            using var ms = new System.IO.MemoryStream();
-            var chunkBuf = new byte[ChunkSize];
-
-            while (!_cancelRequested)
+            // Begin download
+            var beginResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
             {
-                var (bytesRead, eof, readError) = ReadChunk(downloadHandle, chunkBuf);
+                ["op"]         = "download_begin",
+                ["project_id"] = _projectLease!.Handle,
+                ["bucket"]     = _bucketName,
+                ["key"]        = ObjectName,
+                ["offset"]     = _options.Offset,
+                ["length"]     = _options.Length
+            }).ConfigureAwait(false);
 
-                if (bytesRead > 0)
-                {
-                    ms.Write(chunkBuf, 0, (int)bytesRead);
-                    BytesReceived += bytesRead;
-                    DownloadOperationProgressChanged?.Invoke(this);
-                    await Task.Yield();
-                }
-
-                if (readError != null)
-                {
-                    SetFailed(readError);
-                    return;
-                }
-
-                if (eof || bytesRead == 0)
-                    break;
-            }
-
-            if (_cancelRequested)
+            if (beginResult.IsError)
             {
-                Cancelled = true;
-                Running   = false;
-                DownloadOperationEnded?.Invoke(this);
+                SetFailed(beginResult.ErrorMessage!);
                 return;
             }
 
-            DownloadedBytes = ms.ToArray();
-            Completed = true;
-            Running   = false;
-            DownloadOperationEnded?.Invoke(this);
+            long downloadId = beginResult.Data.GetProperty("download_id").GetInt64();
+            TotalBytes      = beginResult.Data.GetProperty("total_bytes").GetInt64();
+
+            try
+            {
+                using var ms = new MemoryStream();
+
+                while (!_cancelRequested)
+                {
+                    var readResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+                    {
+                        ["op"]          = "download_read",
+                        ["download_id"] = downloadId,
+                        ["max_bytes"]   = ChunkMaxBytes
+                    }).ConfigureAwait(false);
+
+                    if (readResult.IsError)
+                    {
+                        SetFailed(readResult.ErrorMessage!);
+                        return;
+                    }
+
+                    var dataB64   = readResult.Data.TryGetProperty("data_b64", out var db) ? db.GetString() ?? string.Empty : string.Empty;
+                    int bytesRead = readResult.Data.TryGetProperty("bytes_read", out var br) ? br.GetInt32() : 0;
+                    bool eof      = readResult.Data.TryGetProperty("eof",        out var ef) && ef.GetBoolean();
+
+                    if (bytesRead > 0 && !string.IsNullOrEmpty(dataB64))
+                    {
+                        var chunk = Convert.FromBase64String(dataB64);
+                        ms.Write(chunk, 0, bytesRead);
+                        BytesReceived += bytesRead;
+                        DownloadOperationProgressChanged?.Invoke(this);
+                        await Task.Yield();
+                    }
+
+                    if (eof || bytesRead == 0)
+                        break;
+                }
+
+                if (_cancelRequested)
+                {
+                    Cancelled = true;
+                    Running   = false;
+                    DownloadOperationEnded?.Invoke(this);
+                    return;
+                }
+
+                DownloadedBytes = ms.ToArray();
+                Completed = true;
+                Running   = false;
+                DownloadOperationEnded?.Invoke(this);
+            }
+            finally
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+                        {
+                            ["op"]          = "download_close",
+                            ["download_id"] = downloadId
+                        }).ConfigureAwait(false);
+                    }
+                    catch { }
+                });
+            }
         }
         catch (Exception ex)
         {
@@ -134,7 +170,6 @@ public class DownloadOperation : IDisposable
         }
         finally
         {
-            UplinkInterop.FreeDownloadHandle(downloadHandle);
             lock (_startSync)
             {
                 _projectLease?.Dispose();
@@ -143,93 +178,6 @@ public class DownloadOperation : IDisposable
         }
     }
 
-    private unsafe (nint handle, string? error) BeginNativeDownload()
-    {
-        using var trace = _access.Trace("uplink_download_object", ("bucket", _bucketName), ("key", ObjectName));
-        var opts = new UplinkInterop.UplinkDownloadOptions
-        {
-            offset = _options.Offset,
-            length = _options.Length
-        };
-        var result = UplinkInterop.uplink_download_object(
-            _projectLease!.Handle, _bucketName, ObjectName, &opts);
-        if (result.error != nint.Zero)
-        {
-            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-            trace?.NativeError(msg, code);
-            UplinkInterop.uplink_free_download_result(result);
-            return (nint.Zero, msg);
-        }
-
-        if (result.download == nint.Zero)
-        {
-            trace?.Fail("Native library returned a null download handle without an error.");
-            UplinkInterop.uplink_free_download_result(result);
-            return (nint.Zero, "Native library returned a null download handle without an error.");
-        }
-
-        trace?.Success();
-        return (result.download, null);
-    }
-
-    private long GetTotalBytes(nint handle)
-    {
-        using var trace = _access.Trace("uplink_download_info", ("bucket", _bucketName), ("key", ObjectName));
-        var infoResult = UplinkInterop.uplink_download_info(handle);
-        long total = 0;
-        if (infoResult.error == nint.Zero && infoResult.object_ != nint.Zero)
-        {
-            total = UplinkInterop.MarshalObject(infoResult.object_).ContentLength;
-            trace?.Success();
-        }
-        else if (infoResult.error != nint.Zero)
-        {
-            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref infoResult.error);
-            trace?.NativeError(msg, code);
-        }
-        else
-        {
-            trace?.Success("Native library returned no object metadata; falling back to unknown length.");
-        }
-
-        UplinkInterop.uplink_free_object_result(infoResult);
-        return total;
-    }
-
-    private unsafe (uint bytesRead, bool eof, string? error) ReadChunk(
-        nint handle, byte[] buffer)
-    {
-        using var trace = _access.Trace("uplink_download_read", ("bucket", _bucketName), ("key", ObjectName), ("bufferLength", buffer.Length));
-        UplinkInterop.UplinkReadResult readResult;
-        fixed (byte* bufPtr = buffer)
-        {
-            readResult = UplinkInterop.uplink_download_read(
-                handle, bufPtr, (nuint)buffer.Length);
-        }
-
-        try
-        {
-            uint bytesRead = (uint)(nuint)readResult.bytes_read;
-            if (readResult.error != nint.Zero)
-            {
-                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref readResult.error);
-                bool isEof = code == UplinkInterop.EndOfFileErrorCode
-                    || msg.Contains("EOF", StringComparison.OrdinalIgnoreCase);
-                if (isEof)
-                    trace?.Success("Reached EOF.");
-                else
-                    trace?.NativeError(msg, code);
-                return (bytesRead, isEof, isEof ? null : msg);
-            }
-
-            trace?.Success();
-            return (bytesRead, bytesRead == 0, null);
-        }
-        finally
-        {
-            UplinkInterop.uplink_free_read_result(readResult);
-        }
-    }
     private void SetFailed(string message)
     {
         Failed       = true;

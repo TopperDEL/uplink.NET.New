@@ -1,7 +1,5 @@
-using System.Runtime.InteropServices;
-using uplink.NET.Exceptions;
+using uplink.NET.Ipc;
 using uplink.NET.Native;
-using NativeCallTrace = uplink.NET.Diagnostics.UplinkDiagnosticsSession.NativeCallTrace;
 
 namespace uplink.NET.Models;
 
@@ -14,8 +12,6 @@ public delegate void UploadOperationEnded(UploadOperation uploadOperation);
 /// </summary>
 public class UploadOperation : IDisposable
 {
-    private const int ChunkSize = 80 * 1024; // 80 KB
-
     private readonly Access _access;
     private readonly string _bucketName;
     private readonly byte[] _data;
@@ -85,56 +81,89 @@ public class UploadOperation : IDisposable
 
     private async Task PerformUploadAsync()
     {
-        Running = true;
+        Running   = true;
         BytesSent = 0;
-
-        // Begin upload outside async/unsafe boundary
-        var (uploadHandle, beginError) = BeginNativeUpload();
-        if (beginError != null)
-        {
-            SetFailed(beginError);
-            return;
-        }
 
         try
         {
-            // Write in chunks; each WriteChunk call is sync/unsafe but await is safe here
-            int offset = 0;
-            while (offset < _data.Length && !_cancelRequested)
+            // Begin upload
+            var beginResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
             {
-                int toWrite = Math.Min(ChunkSize, _data.Length - offset);
-                var (written, writeError) = WriteChunk(uploadHandle, offset, toWrite);
-                if (writeError != null)
-                {
-                    AbortNativeUpload(uploadHandle);
-                    SetFailed(writeError);
-                    return;
-                }
-                offset   += (int)written;
-                BytesSent = offset;
-                UploadOperationProgressChanged?.Invoke(this);
-                await Task.Yield();
+                ["op"]         = "upload_begin",
+                ["project_id"] = _projectLease!.Handle,
+                ["bucket"]     = _bucketName,
+                ["key"]        = ObjectName,
+                ["expires"]    = _nativeOptions.Expires
+            }).ConfigureAwait(false);
+
+            if (beginResult.IsError)
+            {
+                SetFailed(beginResult.ErrorMessage!);
+                return;
             }
+
+            long uploadId = beginResult.Data.GetProperty("upload_id").GetInt64();
 
             if (_cancelRequested)
             {
-                AbortNativeUpload(uploadHandle);
+                await AbortUploadAsync(uploadId).ConfigureAwait(false);
                 Cancelled = true;
                 Running   = false;
                 UploadOperationEnded?.Invoke(this);
                 return;
             }
 
-            if (_customMetadata?.Entries.Count > 0)
+            // Write data (send all at once)
+            if (_data.Length > 0)
             {
-                using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", _bucketName), ("key", ObjectName));
-                SetCustomMetadataNative(uploadHandle, _customMetadata, metadataTrace);
+                var writeResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+                {
+                    ["op"]        = "upload_write",
+                    ["upload_id"] = uploadId,
+                    ["data_b64"]  = Convert.ToBase64String(_data)
+                }).ConfigureAwait(false);
+
+                if (writeResult.IsError)
+                {
+                    await AbortUploadAsync(uploadId).ConfigureAwait(false);
+                    SetFailed(writeResult.ErrorMessage!);
+                    return;
+                }
             }
 
-            string? commitError = CommitNativeUpload(uploadHandle);
-            if (commitError != null)
+            BytesSent = _data.Length;
+            UploadOperationProgressChanged?.Invoke(this);
+
+            // Set custom metadata if needed
+            if (_customMetadata?.Entries.Count > 0)
             {
-                SetFailed(commitError);
+                var metaResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+                {
+                    ["op"]        = "upload_set_metadata",
+                    ["upload_id"] = uploadId,
+                    ["entries"]   = _customMetadata.Entries
+                        .Select(kv => (object?)new Dictionary<string, object?> { ["key"] = kv.Key, ["value"] = kv.Value })
+                        .ToArray()
+                }).ConfigureAwait(false);
+
+                if (metaResult.IsError)
+                {
+                    await AbortUploadAsync(uploadId).ConfigureAwait(false);
+                    SetFailed(metaResult.ErrorMessage!);
+                    return;
+                }
+            }
+
+            // Commit
+            var commitResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+            {
+                ["op"]        = "upload_commit",
+                ["upload_id"] = uploadId
+            }).ConfigureAwait(false);
+
+            if (commitResult.IsError)
+            {
+                SetFailed(commitResult.ErrorMessage!);
                 return;
             }
 
@@ -144,12 +173,10 @@ public class UploadOperation : IDisposable
         }
         catch (Exception ex)
         {
-            AbortNativeUpload(uploadHandle);
             SetFailed(ex.Message);
         }
         finally
         {
-            UplinkInterop.FreeUploadHandle(uploadHandle);
             lock (_startSync)
             {
                 _projectLease?.Dispose();
@@ -158,113 +185,17 @@ public class UploadOperation : IDisposable
         }
     }
 
-    private unsafe (nint handle, string? error) BeginNativeUpload()
+    private static async Task AbortUploadAsync(long uploadId)
     {
-        using var trace = _access.Trace("uplink_upload_object", ("bucket", _bucketName), ("key", ObjectName));
-        var opts = new UplinkInterop.UplinkUploadOptions { expires = _nativeOptions.Expires };
-        var result = UplinkInterop.uplink_upload_object(
-            _projectLease!.Handle, _bucketName, ObjectName, &opts);
-        if (result.error != nint.Zero)
-        {
-            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-            trace?.NativeError(msg, code);
-            UplinkInterop.uplink_free_upload_result(result);
-            return (nint.Zero, msg);
-        }
-
-        if (result.upload == nint.Zero)
-        {
-            trace?.Fail("Native library returned a null upload handle without an error.");
-            UplinkInterop.uplink_free_upload_result(result);
-            return (nint.Zero, "Native library returned a null upload handle without an error.");
-        }
-
-        trace?.Success();
-        return (result.upload, null);
-    }
-
-    private unsafe (uint written, string? error) WriteChunk(
-        nint handle, int offset, int count)
-    {
-        using var trace = _access.Trace("uplink_upload_write", ("bucket", _bucketName), ("key", ObjectName), ("offset", offset), ("count", count));
-        var writeResult = UplinkInterop.WithPinnedBuffer(
-            _data, offset, count,
-            (ptr, len) => UplinkInterop.uplink_upload_write(handle, (void*)ptr, len));
         try
         {
-            if (writeResult.error != nint.Zero)
+            await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
             {
-                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
-                trace?.NativeError(msg, code);
-                return (0, msg);
-            }
-
-            trace?.Success();
-            return ((uint)(nuint)writeResult.bytes_written, null);
+                ["op"]        = "upload_abort",
+                ["upload_id"] = uploadId
+            }).ConfigureAwait(false);
         }
-        finally
-        {
-            UplinkInterop.uplink_free_write_result(writeResult);
-        }
-    }
-
-    private static void AbortNativeUpload(nint handle)
-    {
-        var errPtr = UplinkInterop.uplink_upload_abort(handle);
-        if (errPtr != nint.Zero) UplinkInterop.uplink_free_error(errPtr);
-    }
-
-    private string? CommitNativeUpload(nint handle)
-    {
-        using var trace = _access.Trace("uplink_upload_commit", ("bucket", _bucketName), ("key", ObjectName));
-        var errPtr = UplinkInterop.uplink_upload_commit(handle);
-        if (errPtr != nint.Zero)
-        {
-            var (msg, code) = UplinkInterop.ConsumeError(errPtr);
-            trace?.NativeError(msg, code);
-            return msg;
-        }
-
-        trace?.Success();
-        return null;
-    }
-
-    private static unsafe void SetCustomMetadataNative(
-        nint uploadHandle, CustomMetadata metadata, NativeCallTrace? trace)
-    {
-        var entries = metadata.Entries
-            .Select(kv => new UplinkInterop.UplinkCustomMetadataEntry
-            {
-                key          = System.Runtime.InteropServices.Marshal.StringToCoTaskMemUTF8(kv.Key),
-                key_length   = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Key),
-                value        = System.Runtime.InteropServices.Marshal.StringToCoTaskMemUTF8(kv.Value),
-                value_length = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Value)
-            })
-            .ToArray();
-
-        fixed (UplinkInterop.UplinkCustomMetadataEntry* entriesPtr = entries)
-        {
-            var nativeMeta = new UplinkInterop.UplinkCustomMetadata
-            {
-                entries = (nint)entriesPtr,
-                count   = (nuint)entries.Length
-            };
-            var errPtr = UplinkInterop.uplink_upload_set_custom_metadata(uploadHandle, nativeMeta);
-            if (errPtr != nint.Zero)
-            {
-                var (msg, code) = UplinkInterop.ConsumeError(errPtr);
-                trace?.NativeError(msg, code);
-                throw new IOException($"Failed to set custom metadata: {msg}");
-            }
-        }
-
-        foreach (var e in entries)
-        {
-            Marshal.FreeCoTaskMem(e.key);
-            Marshal.FreeCoTaskMem(e.value);
-        }
-
-        trace?.Success();
+        catch { }
     }
 
     private void SetFailed(string message)

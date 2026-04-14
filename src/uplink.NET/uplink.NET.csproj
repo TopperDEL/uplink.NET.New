@@ -36,4 +36,22 @@
       <_Parameter2>$(StorjUplinkVersion)</_Parameter2>
     </AssemblyAttribute>
   </ItemGroup>
+  <!-- Reference the worker project so it is built, but do not include its assembly in this lib's references -->
+  <ItemGroup>
+    <ProjectReference Include="..\uplink.NET.Worker\uplink.NET.Worker.csproj"
+                      ReferenceOutputAssembly="false"
+                      SkipGetTargetFrameworkProperties="true" />
+  </ItemGroup>
+  <!-- Copy worker output (dll + runtime config + deps) next to this assembly -->
+  <Target Name="CopyWorkerOutput" AfterTargets="Build">
+    <ItemGroup>
+      <WorkerFiles Include="$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.dll"
+                   Condition="Exists('$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.dll')" />
+      <WorkerFiles Include="$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.runtimeconfig.json"
+                   Condition="Exists('$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.runtimeconfig.json')" />
+      <WorkerFiles Include="$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.deps.json"
+                   Condition="Exists('$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.deps.json')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(WorkerFiles)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>
