@@ -77,6 +77,7 @@ jobs:
       - build-native-linux
     env:
       CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/TestResults/diagnostics
+      CI_CRASH_ANALYSIS_DIR: ${{ github.workspace }}/TestResults/crash-analysis
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -114,18 +115,145 @@ jobs:
       - name: Prepare diagnostics logging
         shell: bash
         run: |
-          mkdir -p "$CI_DIAGNOSTICS_DIR"
+          mkdir -p "$CI_DIAGNOSTICS_DIR" "$CI_CRASH_ANALYSIS_DIR"
           echo "uplink.NET diagnostics logs will be written to: $CI_DIAGNOSTICS_DIR"
+          echo "Linux crash-analysis artifacts will be written to: $CI_CRASH_ANALYSIS_DIR"
 
       - name: Run test suite
         id: run_tests
+        shell: bash
         env:
           TEST_ACCESS_GRANT: ${{ secrets.TEST_ACCESS_GRANT }}
           TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/uplink.NET/runtimes/linux-x64/native
           UPLINK_NET_ENABLE_DIAGNOSTICS: '1'
           UPLINK_NET_DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
-        run: dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests"
+          DOTNET_DbgEnableMiniDump: '1'
+          DOTNET_DbgMiniDumpType: '4'
+          DOTNET_DbgMiniDumpName: ${{ env.CI_CRASH_ANALYSIS_DIR }}/core.%e.%p.%t
+        run: |
+          ulimit -c unlimited
+          dotnet test uplink.NET.sln -c Release --no-build --results-directory TestResults --logger "trx;LogFilePrefix=linux-integration-tests"
+
+      - name: Collect Linux crash artifacts
+        if: ${{ always() }}
+        shell: bash
+        env:
+          CRASH_ANALYSIS_DIR: ${{ env.CI_CRASH_ANALYSIS_DIR }}
+        run: |
+          python <<'PY'
+          import os
+          import shutil
+          import subprocess
+          from pathlib import Path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          bundle_dir = Path(os.environ["CRASH_ANALYSIS_DIR"])
+          bundle_dir.mkdir(parents=True, exist_ok=True)
+
+          candidate_roots = [bundle_dir, workspace, Path("/tmp")]
+          dump_patterns = ("core", "core.*", "*.core", "coredump*", "*.dmp")
+          dump_paths = []
+          seen = set()
+
+          for root in candidate_roots:
+              if not root.exists():
+                  continue
+
+              for pattern in dump_patterns:
+                  for path in root.rglob(pattern):
+                      if not path.is_file():
+                          continue
+
+                      resolved = path.resolve()
+                      if resolved in seen:
+                          continue
+
+                      seen.add(resolved)
+                      dump_paths.append(resolved)
+
+          dump_paths = sorted(dump_paths, key=lambda path: str(path))
+
+          if not dump_paths:
+              print("No Linux crash dump files were found.")
+              raise SystemExit(0)
+
+          test_output_source = workspace / "tests" / "uplink.NET.IntegrationTests" / "bin" / "Release"
+          test_output_destination = bundle_dir / "test-output"
+          if test_output_source.exists():
+              shutil.copytree(test_output_source, test_output_destination, dirs_exist_ok=True)
+
+          native_runtime_source = workspace / "src" / "uplink.NET" / "runtimes" / "linux-x64" / "native"
+          native_runtime_destination = bundle_dir / "native-runtime"
+          if native_runtime_source.exists():
+              shutil.copytree(native_runtime_source, native_runtime_destination, dirs_exist_ok=True)
+
+          metadata_dir = bundle_dir / "metadata"
+          metadata_dir.mkdir(parents=True, exist_ok=True)
+
+          for dump_path in dump_paths:
+              destination = bundle_dir / dump_path.name
+              if dump_path != destination:
+                  shutil.copy2(dump_path, destination)
+
+          commands = [
+              ("dotnet-info.txt", ["dotnet", "--info"]),
+              ("dotnet-runtimes.txt", ["dotnet", "--list-runtimes"]),
+              ("uname.txt", ["uname", "-a"]),
+          ]
+
+          for file_name, command in commands:
+              completed = subprocess.run(command, check=False, capture_output=True, text=True)
+              output = completed.stdout
+              if completed.stderr:
+                  output = f"{output}\n{completed.stderr}" if output else completed.stderr
+              (metadata_dir / file_name).write_text(output, encoding="utf-8")
+
+          file_output_lines = []
+          strings_output_lines = []
+          for dump_path in dump_paths:
+              file_result = subprocess.run(["file", str(dump_path)], check=False, capture_output=True, text=True)
+              file_output_lines.append(file_result.stdout.strip() or file_result.stderr.strip())
+
+              strings_result = subprocess.run(
+                  ["strings", str(dump_path)],
+                  check=False,
+                  capture_output=True,
+                  text=True,
+                  errors="replace")
+              interesting_lines = [
+                  line for line in strings_result.stdout.splitlines()
+                  if "runtimeconfig" in line or line.endswith(".dll") or line.endswith(".deps.json")
+              ]
+              strings_output_lines.append(f"# {dump_path.name}")
+              strings_output_lines.extend(interesting_lines[:50] or ["<no runtimeconfig/deps/dll strings found>"])
+              strings_output_lines.append("")
+
+          (metadata_dir / "dump-file.txt").write_text("\n".join(filter(None, file_output_lines)) + "\n", encoding="utf-8")
+          (metadata_dir / "dump-strings.txt").write_text("\n".join(strings_output_lines), encoding="utf-8")
+
+          instructions = """Linux crash-analysis bundle
+
+          This bundle contains the dump file plus the matching test output and native runtime from CI.
+
+          WSL quick start:
+          1. sudo apt update
+          2. sudo apt install -y unzip curl lldb
+          3. dotnet tool install -g dotnet-dump
+          4. export PATH="$PATH:$HOME/.dotnet/tools"
+          5. dotnet-dump analyze ./<dump-file>
+
+          Useful dotnet-dump commands:
+          - threads
+          - clrthreads
+          - clrstack
+          - pe
+          - dumpheap -stat
+
+          If dotnet-dump needs more context, inspect the copied files under test-output/ and native-runtime/.
+          """
+          (metadata_dir / "README.txt").write_text("\n".join(line.strip() for line in instructions.splitlines()) + "\n", encoding="utf-8")
+          PY
 
       - name: Upload test results
         if: ${{ always() }}
@@ -145,12 +273,21 @@ jobs:
           path: ${{ env.CI_DIAGNOSTICS_DIR }}/
           if-no-files-found: warn
 
+      - name: Upload crash analysis bundle
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-crash-analysis-linux
+          path: ${{ env.CI_CRASH_ANALYSIS_DIR }}/
+          if-no-files-found: warn
+
       - name: Summarize test results
         if: ${{ always() }}
         shell: bash
         env:
           TEST_OUTCOME: ${{ steps.run_tests.outcome }}
           DIAGNOSTICS_DIR: ${{ env.CI_DIAGNOSTICS_DIR }}
+          CRASH_ANALYSIS_DIR: ${{ env.CI_CRASH_ANALYSIS_DIR }}
         run: |
           python <<'PY'
           import os
@@ -163,6 +300,20 @@ jobs:
           outcome = os.environ.get("TEST_OUTCOME", "unknown")
           diagnostics_dir = Path(os.environ["DIAGNOSTICS_DIR"])
           diagnostics_logs = sorted(diagnostics_dir.rglob("*.log")) if diagnostics_dir.exists() else []
+          crash_analysis_dir = Path(os.environ["CRASH_ANALYSIS_DIR"])
+          crash_dumps = []
+          if crash_analysis_dir.exists():
+              seen = set()
+              for pattern in ("core", "core.*", "*.core", "coredump*", "*.dmp"):
+                  for path in crash_analysis_dir.rglob(pattern):
+                      if not path.is_file():
+                          continue
+                      resolved = path.resolve()
+                      if resolved in seen:
+                          continue
+                      seen.add(resolved)
+                      crash_dumps.append(path)
+              crash_dumps.sort()
 
           def parse_dt(value: str):
               if not value:
@@ -224,7 +375,9 @@ jobs:
               f"| Duration | {duration} |",
               f"| Diagnostics directory | `{diagnostics_dir}` |",
               f"| Diagnostics log files | {len(diagnostics_logs)} |",
-              "| Diagnostics artifacts | `ci-test-results-linux`, `ci-diagnostics-logs-linux` |",
+              f"| Crash analysis directory | `{crash_analysis_dir}` |",
+              f"| Crash dump files | {len(crash_dumps)} |",
+              "| Diagnostics artifacts | `ci-test-results-linux`, `ci-diagnostics-logs-linux`, `ci-crash-analysis-linux` |",
           ]
 
           if not trx_files:
@@ -235,6 +388,12 @@ jobs:
               lines.extend(f"- `{log_path}`" for log_path in diagnostics_logs)
           else:
               lines.extend(["", "_No diagnostics log files were generated._"])
+
+          if crash_dumps:
+              lines.extend(["", "### Crash dumps", ""])
+              lines.extend(f"- `{dump_path}`" for dump_path in crash_dumps)
+          else:
+              lines.extend(["", "_No crash dump files were generated._"])
 
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write("\n".join(lines) + "\n")
