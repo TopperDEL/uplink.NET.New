@@ -276,7 +276,16 @@ jobs:
           # crash, these stacks will show the internal state. 'system' does
           # NOT call abort() (that's 'crash' only), so it's safe.
           GOTRACEBACK: system
-          GODEBUG: 'cgocheck=1,invalidptr=1,clobberfree=1'
+          # asyncpreemptoff=1: disables Go's SIGURG-based goroutine
+          # preemption. Testing whether the crash is actually a SIGURG
+          # delivery failure, not SIGSEGV. Evidence: stderr.log is empty
+          # (no runtime handler fired), si_code=SI_KERNEL (kernel's
+          # force_sig, not a userspace signal), si_addr=0x0. This matches
+          # the kernel failing to deliver ANY signal to a thread with
+          # corrupted signal state — and Go sends SIGURG constantly for
+          # goroutine preemption. If crash disappears → SIGURG is the
+          # trigger; the fix is in Go's signal/thread setup.
+          GODEBUG: 'asyncpreemptoff=1,cgocheck=1,invalidptr=1,clobberfree=1'
           # .NET in-process minidumps for managed-side crashes.
           DOTNET_DbgEnableMiniDump: '1'
           DOTNET_DbgMiniDumpType: '4'
