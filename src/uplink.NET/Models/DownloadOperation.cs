@@ -153,23 +153,30 @@ public class DownloadOperation : IDisposable
         };
         var result = UplinkInterop.uplink_download_object(
             _projectLease!.Handle, _bucketName, ObjectName, &opts);
-        if (result.error != nint.Zero)
+        try
         {
-            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-            trace?.NativeError(msg, code);
-            UplinkInterop.uplink_free_download_result(result);
-            return (nint.Zero, msg);
-        }
+            if (result.error != nint.Zero)
+            {
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                trace?.NativeError(msg, code);
+                return (nint.Zero, msg);
+            }
 
-        if (result.download == nint.Zero)
+            if (result.download == nint.Zero)
+            {
+                trace?.Fail("Native library returned a null download handle without an error.");
+                return (nint.Zero, "Native library returned a null download handle without an error.");
+            }
+
+            var downloadHandle = result.download;
+            result.download = nint.Zero;
+            trace?.Success();
+            return (downloadHandle, null);
+        }
+        finally
         {
-            trace?.Fail("Native library returned a null download handle without an error.");
             UplinkInterop.uplink_free_download_result(result);
-            return (nint.Zero, "Native library returned a null download handle without an error.");
         }
-
-        trace?.Success();
-        return (result.download, null);
     }
 
     private long GetTotalBytes(nint handle)
