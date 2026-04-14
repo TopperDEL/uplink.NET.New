@@ -271,9 +271,9 @@ public class ObjectService : IObjectService
         string key,
         DownloadOptions downloadOptions)
     {
+        var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            using var projectLease = _access.AcquireProjectLease();
             var handle = nint.Zero;
             try
             {
@@ -287,6 +287,7 @@ public class ObjectService : IObjectService
             {
                 if (handle != nint.Zero)
                     UplinkInterop.FreeDownloadHandle(handle);
+                projectLease.Dispose();
             }
         });
     }

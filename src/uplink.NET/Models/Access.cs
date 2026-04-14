@@ -22,10 +22,10 @@ public class Access : IDisposable
     private bool _disposeRequested;
     private bool _disposed;
 
-    /// <summary>Open a project using the supplied access-grant string.</summary>
+    /// <summary>Parse the supplied access-grant string.</summary>
     public Access(string accessGrant) : this(accessGrant, null) { }
 
-    /// <summary>Open a project with an optional <see cref="Config"/>.</summary>
+    /// <summary>Parse an access grant with an optional <see cref="Config"/>.</summary>
     public Access(string accessGrant, Config? config)
     {
         if (string.IsNullOrWhiteSpace(accessGrant))
