@@ -37,15 +37,15 @@
 #include <unistd.h>
 
 /* How many C threads call into Go concurrently. */
-#define NUM_WORKERS     8
+#define NUM_WORKERS     16
 /* How many goroutines each cgo call spawns. */
-#define GOROUTINES      50
+#define GOROUTINES      100
 /* Duration of each cgo call in milliseconds. */
-#define WORK_DURATION   20
+#define WORK_DURATION   50
 /* How many iterations each worker runs. */
-#define ITERATIONS      200
+#define ITERATIONS      500
 /* How often the "GC thread" sends SIGRT_2 (microseconds). */
-#define GC_INTERVAL_US  500
+#define GC_INTERVAL_US  100
 
 typedef void (*work_fn)(int, int);
 

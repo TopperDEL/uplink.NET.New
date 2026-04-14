@@ -104,17 +104,26 @@ jobs:
           cd "$GITHUB_WORKSPACE/scripts/repro-sigaltstack"
           CGO_ENABLED=1 go build -buildmode=c-shared -o libgolib.so golib.go
           cc -O2 -g -o repro host.c -ldl -lpthread
-          echo "running sigaltstack reproducer (native amd64)..."
-          set +e
-          LD_LIBRARY_PATH=. timeout 120 ./repro 2>&1
-          rc=$?
-          set -e
-          if [ $rc -eq 0 ]; then
-            echo "PASS — no crash in 200 iterations"
-          elif [ $rc -eq 124 ]; then
-            echo "TIMEOUT — reproducer took >120s (may need more iterations)"
-          else
-            echo "::warning::Sigaltstack reproducer CRASHED (exit $rc)"
+          # Run the reproducer in a loop. The crash is intermittent;
+          # a single pass may not trigger it. 5 attempts × up to 60s
+          # each = max 5 minutes, which is acceptable for CI.
+          echo "running sigaltstack reproducer (native amd64, up to 5 attempts)..."
+          crashed=0
+          for attempt in 1 2 3 4 5; do
+            echo "--- attempt $attempt ---"
+            set +e
+            LD_LIBRARY_PATH=. timeout 60 ./repro 2>&1
+            rc=$?
+            set -e
+            if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then
+              echo "::warning::Sigaltstack reproducer CRASHED on attempt $attempt (exit $rc)"
+              crashed=1
+              break
+            fi
+            echo "attempt $attempt: exit $rc"
+          done
+          if [ $crashed -eq 0 ]; then
+            echo "No crash in 5 attempts"
           fi
 
       - name: Test Go signal handler chaining
