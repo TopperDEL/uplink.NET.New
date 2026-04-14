@@ -410,10 +410,7 @@ public class Access : IDisposable
             if (releaseHandles)
             {
                 lock (_lifetimeSync)
-                {
-                    if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
-                        ReleaseHandlesNoLock();
-                }
+                    ReleaseHandlesNoLock();
             }
         }
     }
@@ -448,8 +445,8 @@ public class Access : IDisposable
 
     internal sealed class ProjectHandleLease : IDisposable
     {
-        private Access? _owner;
-        private AccessHandleLease? _accessLease;
+        private volatile Access? _owner;
+        private volatile AccessHandleLease? _accessLease;
 
         internal ProjectHandleLease(Access owner, nint handle, AccessHandleLease accessLease)
         {
@@ -477,7 +474,7 @@ public class Access : IDisposable
 
     internal sealed class AccessHandleLease : IDisposable
     {
-        private Access? _owner;
+        private volatile Access? _owner;
 
         internal AccessHandleLease(Access owner, nint handle)
         {
