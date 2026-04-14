@@ -446,9 +446,15 @@ public class Access : IDisposable
         public void Dispose()
         {
             var owner = System.Threading.Interlocked.Exchange(ref _owner, null);
-            owner?.ReleaseProjectLease(Handle);
             var accessLease = System.Threading.Interlocked.Exchange(ref _accessLease, null);
-            accessLease?.Dispose();
+            try
+            {
+                owner?.ReleaseProjectLease(Handle);
+            }
+            finally
+            {
+                accessLease?.Dispose();
+            }
         }
     }
 
