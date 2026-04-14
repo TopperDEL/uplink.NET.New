@@ -102,15 +102,46 @@ static void *worker(void *arg) {
 }
 
 /*
- * SIGRT_2 handler — installed BEFORE dlopen so our handler is the
- * "previous" handler Go saves. Go's handler should chain to ours.
- * We just return — the point is to have a valid handler installed
- * so the signal isn't SIG_DFL (which would kill the process on
- * delivery even without the overflow bug).
+ * SIGRT_2 handler — simulates CoreCLR's GC thread-suspension handler.
+ *
+ * CoreCLR's real handler for SIGRT_2 (used for GC thread suspension)
+ * does significant work: walks the managed stack, saves register
+ * context, updates GC bookkeeping structures, may call into the JIT
+ * for stack-frame info. This consumes substantial stack space.
+ *
+ * Go's threads have a 16 KB sigaltstack. If this handler runs on that
+ * alt stack (because Go installed SA_ONSTACK for its signal handlers,
+ * and Go's handler chains to ours), the combined stack usage of Go's
+ * handler + our handler can overflow 16 KB.
+ *
+ * We simulate CoreCLR's stack depth with recursive calls and volatile
+ * locals that the compiler can't optimize away.
  */
+static volatile int handler_depth_sink = 0;
+
+/* Recursive function that burns stack space inside the signal handler. */
+__attribute__((noinline))
+static void handler_stack_burner(int depth) {
+    /* ~512 bytes of locals per frame to simulate CoreCLR's frame size. */
+    volatile char frame[512];
+    frame[0] = (char)depth;
+    frame[511] = (char)(depth + 1);
+    handler_depth_sink += frame[0] + frame[511];
+
+    if (depth > 0) {
+        handler_stack_burner(depth - 1);
+    }
+}
+
 static void rt2_handler(int sig, siginfo_t *info, void *ctx) {
     (void)sig; (void)info; (void)ctx;
-    /* no-op — just survive the signal */
+    /*
+     * Burn ~12 KB of stack (24 frames × 512 bytes) to simulate
+     * CoreCLR's GC suspension handler depth. Combined with Go's own
+     * signal handler prologue (~2-4 KB), this should push past the
+     * 16 KB sigaltstack limit.
+     */
+    handler_stack_burner(24);
 }
 
 int main(void) {
