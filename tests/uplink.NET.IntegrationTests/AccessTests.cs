@@ -210,8 +210,8 @@ public class AccessTests
 
         Assert.NotNull(acquireProjectLeaseMethod);
 
-        using var projectLease = (IDisposable?)acquireProjectLeaseMethod!.Invoke(context.Access, null);
-        Assert.NotNull(projectLease);
+        using var lease = (IDisposable?)acquireProjectLeaseMethod!.Invoke(context.Access, null);
+        Assert.NotNull(lease);
 
         var disposeTask = Task.Run(context.Access.Dispose);
 
@@ -223,6 +223,6 @@ public class AccessTests
         Assert.True(disposeTask.IsCompletedSuccessfully);
         Assert.Throws<ObjectDisposedException>(() => context.Access.Serialize());
 
-        projectLease.Dispose();
+        lease.Dispose();
     }
 }
