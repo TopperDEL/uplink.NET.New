@@ -180,6 +180,64 @@ earlier, on this same thread, inside the signal handler itself.
   correct and would produce `ObjectDisposedException` or use-after-free
   with `SEGV_MAPERR` / `SEGV_ACCERR`, not `SI_KERNEL`.
 
+## Sigaltstack hypothesis — tested and disproven
+
+Installed a 1 MB sigaltstack per thread via `scripts/ci/sigstack_fix.c`,
+called from `SigStackFix.EnsureOnCurrentThread()` in the `Access`
+constructor and `AcquireProjectLease`. Two iterations:
+
+- **v1**: installed *before* cgo. Go's `minitSignalStack()` overwrote it
+  *during* the first cgo call on each thread. Crash unchanged.
+- **v2**: installed *after* cgo return too, with actual size-check guard
+  instead of boolean flag. Verified locally that the stack IS 1 MB after
+  the call. **Crash still unchanged** — same `si_code=SI_KERNEL`,
+  `si_addr=0x0` (core: run 24389443921, job 71243569273).
+
+The crash site did shift (from libc futex-wrapper prologue at offset
+`0xd40` to a `call` instruction at offset `0x4ea` with a much larger
+stack frame), but the signal metadata is identical. This rules out
+sigaltstack overflow as the mechanism.
+
+## Revised hypothesis: Go signal handler not chaining to CoreCLR
+
+`si_code=SI_KERNEL` with `si_addr=0x0` is also consistent with a
+**nested SIGSEGV** — specifically, Go's cgo signal handler receiving a
+SIGSEGV it doesn't know how to handle (e.g., CoreCLR's managed null-ref
+probe on a thread that has entered cgo), *failing to chain* to CoreCLR's
+previously-installed handler, and calling `dieFromSignal(SIGSEGV)` which
+re-raises SIGSEGV via `raise()`. The nested signal during handler
+execution causes the kernel to deliver SI_KERNEL.
+
+Go's signal forwarding logic (`sigfwdgo` in `runtime/signal_unix.go`)
+should detect "not from Go" and chain to the previous handler. Known Go
+issues where this fails:
+
+- [go#21897](https://github.com/golang/go/issues/21897): cgo crash
+  handler does not chain to previous SIGSEGV handler.
+- [go#35814](https://github.com/golang/go/issues/35814): signal delivery
+  and Go signal handler interaction.
+- [go#47145](https://github.com/golang/go/issues/47145): SIGSEGV not
+  forwarded to previous handler in cgo.
+
+Whether Go 1.25 still has a version of this bug is an open question.
+The fix would be upstream in Go's runtime, not in this project.
+
+### Testing this hypothesis
+
+1. **Write a standalone C program** that installs a SIGSEGV handler
+   (mimicking CoreCLR), then loads `libstorj_uplink.so` via `dlopen`,
+   calls a function, and then deliberately raises SIGSEGV. If Go's
+   handler eats the signal instead of chaining → confirmed.
+
+2. **Add `signal(SIGSEGV, SIG_DFL)` from our shim** right after Go's cgo
+   init. If the crash changes from SI_KERNEL to SEGV_MAPERR (a real
+   page fault that kills the process normally) → confirmed it was
+   Go's handler re-raising.
+
+3. **Check if Go writes a goroutine dump to stderr** before dying. If
+   `badsignal` fires, Go prints "unexpected fault address" or similar.
+   We should capture the test host's stderr into a file and inspect.
+
 ## Proposed experiments (ordered by cost)
 
 ### 1. Install a larger `sigaltstack` before any cgo call
