@@ -224,7 +224,15 @@ public class BucketService : IBucketService
             while (UplinkInterop.uplink_bucket_iterator_next(iterator))
             {
                 nint bucketPtr = UplinkInterop.uplink_bucket_iterator_item(iterator);
-                list.Items.Add(UplinkInterop.MarshalBucket(bucketPtr));
+                try
+                {
+                    list.Items.Add(UplinkInterop.MarshalBucket(bucketPtr));
+                }
+                finally
+                {
+                    if (bucketPtr != nint.Zero)
+                        UplinkInterop.uplink_free_bucket(bucketPtr);
+                }
             }
 
             nint errPtr = UplinkInterop.uplink_bucket_iterator_err(iterator);

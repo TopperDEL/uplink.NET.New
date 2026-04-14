@@ -164,23 +164,30 @@ public class UploadOperation : IDisposable
         var opts = new UplinkInterop.UplinkUploadOptions { expires = _nativeOptions.Expires };
         var result = UplinkInterop.uplink_upload_object(
             _projectLease!.Handle, _bucketName, ObjectName, &opts);
-        if (result.error != nint.Zero)
+        try
         {
-            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-            trace?.NativeError(msg, code);
-            UplinkInterop.uplink_free_upload_result(result);
-            return (nint.Zero, msg);
-        }
+            if (result.error != nint.Zero)
+            {
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                trace?.NativeError(msg, code);
+                return (nint.Zero, msg);
+            }
 
-        if (result.upload == nint.Zero)
+            if (result.upload == nint.Zero)
+            {
+                trace?.Fail("Native library returned a null upload handle without an error.");
+                return (nint.Zero, "Native library returned a null upload handle without an error.");
+            }
+
+            var uploadHandle = result.upload;
+            result.upload = nint.Zero;
+            trace?.Success();
+            return (uploadHandle, null);
+        }
+        finally
         {
-            trace?.Fail("Native library returned a null upload handle without an error.");
             UplinkInterop.uplink_free_upload_result(result);
-            return (nint.Zero, "Native library returned a null upload handle without an error.");
         }
-
-        trace?.Success();
-        return (result.upload, null);
     }
 
     private unsafe (uint written, string? error) WriteChunk(

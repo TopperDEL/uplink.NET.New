@@ -335,6 +335,9 @@ internal static unsafe partial class UplinkInterop
     [LibraryImport(LibName)]
     internal static partial void uplink_free_bucket_result(UplinkBucketResult result);
 
+    [LibraryImport(LibName)]
+    internal static partial void uplink_free_bucket(nint bucket);
+
     // ── Upload ────────────────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
     internal static partial UplinkUploadResult uplink_upload_object(nint project, string bucket, string key, UplinkUploadOptions* options);
@@ -420,6 +423,9 @@ internal static unsafe partial class UplinkInterop
     [LibraryImport(LibName)]
     internal static partial void uplink_free_object_result(UplinkObjectResult result);
 
+    [LibraryImport(LibName)]
+    internal static partial void uplink_free_object(nint object_);
+
     // ── Multipart upload ──────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
     internal static partial UplinkUploadInfoResult uplink_begin_upload(nint project, string bucket, string key, UplinkUploadOptions* options);
@@ -449,6 +455,9 @@ internal static unsafe partial class UplinkInterop
     internal static partial void uplink_free_upload_info_result(UplinkUploadInfoResult result);
 
     [LibraryImport(LibName)]
+    internal static partial void uplink_free_upload_info(nint info);
+
+    [LibraryImport(LibName)]
     internal static partial void uplink_free_commit_upload_result(UplinkCommitUploadResult result);
 
     [LibraryImport(LibName)]
@@ -456,6 +465,9 @@ internal static unsafe partial class UplinkInterop
 
     [LibraryImport(LibName)]
     internal static partial void uplink_free_part_result(UplinkPartResult result);
+
+    [LibraryImport(LibName)]
+    internal static partial void uplink_free_part(nint part);
 
     // ── Upload iterator ──────────────────────────────────────────────────────
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
@@ -526,8 +538,14 @@ internal static unsafe partial class UplinkInterop
 
     internal static void FreeProjectHandle(nint project)
     {
-        if (project != nint.Zero)
-            uplink_free_project_result(new UplinkProjectResult { project = project, error = nint.Zero });
+        if (project == nint.Zero)
+            return;
+
+        var errPtr = uplink_close_project(project);
+        if (errPtr != nint.Zero)
+            uplink_free_error(errPtr);
+
+        uplink_free_project_result(new UplinkProjectResult { project = project, error = nint.Zero });
     }
 
     internal static void FreeAccessHandle(nint access)
@@ -544,8 +562,14 @@ internal static unsafe partial class UplinkInterop
 
     internal static void FreeDownloadHandle(nint download)
     {
-        if (download != nint.Zero)
-            uplink_free_download_result(new UplinkDownloadResult { download = download, error = nint.Zero });
+        if (download == nint.Zero)
+            return;
+
+        var errPtr = uplink_close_download(download);
+        if (errPtr != nint.Zero)
+            uplink_free_error(errPtr);
+
+        uplink_free_download_result(new UplinkDownloadResult { download = download, error = nint.Zero });
     }
 
     internal static void FreePartUploadHandle(nint partUpload)

@@ -99,10 +99,10 @@ public class Access : IDisposable
     /// <summary>Serialize this access grant so it can be stored or reused later.</summary>
     public string Serialize()
     {
-        ThrowIfDisposed();
+        using var accessLease = AcquireAccessLease();
 
         using var trace = Trace("uplink_access_serialize");
-        var result = UplinkInterop.uplink_access_serialize(_accessHandle);
+        var result = UplinkInterop.uplink_access_serialize(accessLease.Handle);
         try
         {
             if (result.error != nint.Zero)

@@ -106,24 +106,30 @@ public class ObjectService : IObjectService
         UplinkInterop.UplinkUploadResult uploadResult;
         uploadResult = UplinkInterop.uplink_upload_object(
             projectLease.Handle, bucketName, objectKey, &opts);
-
-        if (uploadResult.error != nint.Zero)
+        nint uploadHandle;
+        try
         {
-            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref uploadResult.error);
-            trace?.NativeError(msg, code);
-            UplinkInterop.uplink_free_upload_result(uploadResult);
-            projectLease.Dispose();
-            throw new Exception($"Failed to begin upload: {msg}");
+            if (uploadResult.error != nint.Zero)
+            {
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref uploadResult.error);
+                trace?.NativeError(msg, code);
+                projectLease.Dispose();
+                throw new Exception($"Failed to begin upload: {msg}");
+            }
+
+            uploadHandle = uploadResult.upload;
+            if (uploadHandle == nint.Zero)
+            {
+                trace?.Fail("Native library returned a null upload handle without an error.");
+                projectLease.Dispose();
+                throw new Exception("Failed to begin upload: native library returned a null upload handle without an error.");
+            }
+
+            uploadResult.upload = nint.Zero;
         }
-
-        var uploadHandle = uploadResult.upload;
-
-        if (uploadHandle == nint.Zero)
+        finally
         {
-            trace?.Fail("Native library returned a null upload handle without an error.");
             UplinkInterop.uplink_free_upload_result(uploadResult);
-            projectLease.Dispose();
-            throw new Exception("Failed to begin upload: native library returned a null upload handle without an error.");
         }
 
         // Set custom metadata if supplied
@@ -180,7 +186,15 @@ public class ObjectService : IObjectService
                         while (UplinkInterop.uplink_object_iterator_next(iterator))
                         {
                             nint objPtr = UplinkInterop.uplink_object_iterator_item(iterator);
-                            list.Items.Add(UplinkInterop.MarshalObject(objPtr));
+                            try
+                            {
+                                list.Items.Add(UplinkInterop.MarshalObject(objPtr));
+                            }
+                            finally
+                            {
+                                if (objPtr != nint.Zero)
+                                    UplinkInterop.uplink_free_object(objPtr);
+                            }
                         }
 
                         nint errPtr = UplinkInterop.uplink_object_iterator_err(iterator);
@@ -495,24 +509,30 @@ public class ObjectService : IObjectService
             bucketName,
             key,
             &opts);
-
-        if (result.error != nint.Zero)
+        try
         {
-            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-            trace?.NativeError(msg, code);
-            UplinkInterop.uplink_free_download_result(result);
-            throw new ObjectNotFoundException(key, msg);
-        }
+            if (result.error != nint.Zero)
+            {
+                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
+                trace?.NativeError(msg, code);
+                throw new ObjectNotFoundException(key, msg);
+            }
 
-        if (result.download == nint.Zero)
+            if (result.download == nint.Zero)
+            {
+                trace?.Fail("Native library returned a null download handle without an error.");
+                throw new IOException("Failed to open Storj download stream: native library returned a null download handle without an error.");
+            }
+
+            var downloadHandle = result.download;
+            result.download = nint.Zero;
+            trace?.Success();
+            return downloadHandle;
+        }
+        finally
         {
-            trace?.Fail("Native library returned a null download handle without an error.");
             UplinkInterop.uplink_free_download_result(result);
-            throw new IOException("Failed to open Storj download stream: native library returned a null download handle without an error.");
         }
-
-        trace?.Success();
-        return result.download;
     }
 
     private long GetDownloadLength(
