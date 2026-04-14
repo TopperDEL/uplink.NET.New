@@ -211,7 +211,7 @@ jobs:
 
           def run_command(command, *, errors="strict"):
               if not isinstance(command, (list, tuple)) or not command or any(not isinstance(part, str) for part in command):
-                  raise ValueError("run_command expects a non-empty list of string arguments.")
+                  raise ValueError("run_command expects a non-empty list or tuple of string arguments.")
               completed = subprocess.run(command, check=False, capture_output=True, text=True, errors=errors)
               output = completed.stdout
               if completed.stderr:
@@ -241,7 +241,7 @@ jobs:
 
               strings_output_lines.append(f"# {dump_path.name}")
               strings_output_lines.extend(
-                  interesting_lines[:max_interesting_strings_per_dump] or ["<no runtimeconfig/deps/dll strings found>"])
+                  interesting_lines[:max_interesting_strings_per_dump] or ["<no interesting strings found>"])
               strings_output_lines.append("")
 
           (metadata_dir / "dump-file.txt").write_text("\n".join(filter(None, file_output_lines)) + "\n", encoding="utf-8")
