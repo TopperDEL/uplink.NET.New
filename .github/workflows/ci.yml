@@ -150,6 +150,7 @@ jobs:
           workspace = Path(os.environ["GITHUB_WORKSPACE"])
           bundle_dir = Path(os.environ["CRASH_ANALYSIS_DIR"])
           bundle_dir.mkdir(parents=True, exist_ok=True)
+          max_interesting_strings_per_dump = 50
 
           candidate_roots = [bundle_dir, workspace, Path("/tmp")]
           dump_patterns = ("core", "core.*", "*.core", "coredump*", "*.dmp")
@@ -226,13 +227,17 @@ jobs:
                   if "runtimeconfig" in line or line.endswith(".dll") or line.endswith(".deps.json")
               ]
               strings_output_lines.append(f"# {dump_path.name}")
-              strings_output_lines.extend(interesting_lines[:50] or ["<no runtimeconfig/deps/dll strings found>"])
+              strings_output_lines.extend(
+                  interesting_lines[:max_interesting_strings_per_dump] or ["<no runtimeconfig/deps/dll strings found>"])
               strings_output_lines.append("")
 
           (metadata_dir / "dump-file.txt").write_text("\n".join(filter(None, file_output_lines)) + "\n", encoding="utf-8")
           (metadata_dir / "dump-strings.txt").write_text("\n".join(strings_output_lines), encoding="utf-8")
 
-          instructions = """Linux crash-analysis bundle
+          from textwrap import dedent
+
+          instructions = dedent("""\
+          Linux crash-analysis bundle
 
           This bundle contains the dump file plus the matching test output and native runtime from CI.
 
@@ -251,8 +256,8 @@ jobs:
           - dumpheap -stat
 
           If dotnet-dump needs more context, inspect the copied files under test-output/ and native-runtime/.
-          """
-          (metadata_dir / "README.txt").write_text("\n".join(line.strip() for line in instructions.splitlines()) + "\n", encoding="utf-8")
+          """)
+          (metadata_dir / "README.txt").write_text(instructions, encoding="utf-8")
           PY
 
       - name: Upload test results
