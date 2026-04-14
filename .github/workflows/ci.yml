@@ -353,13 +353,45 @@ jobs:
           # forward it depending on vstest's pipe setup. Belt-and-
           # suspenders: tee stderr to a file AND merge into stdout.
           mkdir -p "${{ github.workspace }}/TestResults/diag"
-          dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
-            --results-directory "${{ github.workspace }}/TestResults" \
-            --logger "trx;LogFilePrefix=linux-integration-tests" \
-            --blame \
-            --blame-hang-timeout 10m \
-            --diag:"${{ github.workspace }}/TestResults/diag/vstest.log" \
-            2> >(tee "${{ github.workspace }}/TestResults/diag/stderr.log" >&2)
+          # Run under strace -f to capture every signal operation across
+          # the process tree. When the crash fires, the tail of strace.log
+          # will show the EXACT signal being delivered, to which thread,
+          # and whether delivery succeeded. This is the most direct
+          # diagnostic we can get — the core dumps only show post-mortem
+          # state (rip in the crash-handler futex, si_code=SI_KERNEL),
+          # not what signal was in flight. strace sees the original.
+          #
+          # -f: follow forks (dotnet test spawns testhost)
+          # -e trace=signal: only log signal-related syscalls (sigaction,
+          #   sigaltstack, tgkill, kill, rt_sigqueueinfo, etc)
+          # -o file: write to file (not mixed into stdout)
+          # -t: timestamps
+          strace -f -t -e trace=signal \
+            -o "${{ github.workspace }}/TestResults/diag/strace-signals.log" \
+            dotnet test "${{ github.workspace }}/uplink.NET.sln" -c Release --no-build \
+              --results-directory "${{ github.workspace }}/TestResults" \
+              --logger "trx;LogFilePrefix=linux-integration-tests" \
+              --blame \
+              --blame-hang-timeout 10m \
+              --diag:"${{ github.workspace }}/TestResults/diag/vstest.log" \
+              2> >(tee "${{ github.workspace }}/TestResults/diag/stderr.log" >&2)
+
+      - name: Tail strace signal log
+        if: ${{ always() && steps.run_tests.outcome != 'success' }}
+        shell: bash
+        run: |
+          log="${{ github.workspace }}/TestResults/diag/strace-signals.log"
+          if [[ -f "$log" ]]; then
+            echo "strace log size: $(wc -c < "$log") bytes, $(wc -l < "$log") lines"
+            echo "::group::last 200 lines of strace-signals.log"
+            tail -200 "$log"
+            echo "::endgroup::"
+            echo "::group::all SIGSEGV/SIGABRT/SIGBUS/SIG related kills"
+            grep -E "SIGSEGV|SIGABRT|SIGBUS|SIGKILL|--- SIG" "$log" | tail -50
+            echo "::endgroup::"
+          else
+            echo "strace log not found at $log"
+          fi
 
       - name: Analyze dumps with dotnet-dump (managed stacks)
         if: ${{ always() && steps.run_tests.outcome != 'success' }}
