@@ -28,7 +28,26 @@ internal sealed class NativeWorkerClient : IDisposable
 
     internal void EnsureStarted()
     {
-        if (_process != null) return;
+        if (_process != null)
+        {
+            // If the worker exited unexpectedly, clean up so we can restart it.
+            try
+            {
+                if (!_process.HasExited)
+                    return;
+            }
+            catch
+            {
+                // HasExited can throw if the process handle is invalid; treat as exited.
+            }
+
+            try { _stdin?.Close(); } catch { }
+            try { _stdout?.Close(); } catch { }
+            try { _process.Dispose(); } catch { }
+            _stdin   = null;
+            _stdout  = null;
+            _process = null;
+        }
 
         var assemblyDir = Path.GetDirectoryName(typeof(NativeWorkerClient).Assembly.Location)!;
         var workerDll = Path.Combine(assemblyDir, "uplink.NET.Worker.dll");

@@ -527,7 +527,15 @@ internal static unsafe partial class UplinkInterop
     internal static void FreeProjectHandle(nint project)
     {
         if (project != nint.Zero)
+        {
+            // Close the project first: this signals the Go runtime to shut down the project's
+            // goroutines and close network connections.  Without this step the goroutines keep
+            // running against a freed handle and can panic, killing the worker process.
+            var errPtr = uplink_close_project(project);
+            if (errPtr != nint.Zero)
+                uplink_free_error(errPtr); // ignore close errors; just release the error memory
             uplink_free_project_result(new UplinkProjectResult { project = project, error = nint.Zero });
+        }
     }
 
     internal static void FreeAccessHandle(nint access)
