@@ -94,6 +94,30 @@ jobs:
 
           ls -lh "$target/"
 
+      - name: Test Go signal handler chaining
+        shell: bash
+        run: |
+          # Standalone test of whether Go's cgo signal handler correctly
+          # chains SIGSEGV to a previously-installed handler. Mimics the
+          # CoreCLR + uplink-c interaction: install handler, dlopen the Go
+          # shared lib, do a cgo call, then deliberately trigger SIGSEGV.
+          # If Go chains → our handler runs and we print PASS.
+          # If Go eats it → process dies and we print FAIL.
+          # See docs/crash-investigation.md for full context.
+          target="$GITHUB_WORKSPACE/src/uplink.NET/runtimes/linux-x64/native"
+          cc -O0 -g -o /tmp/test_signal_chain \
+            "$GITHUB_WORKSPACE/scripts/ci/test_signal_chain.c" \
+            -ldl -lpthread
+          echo "running signal chain test..."
+          set +e
+          LD_LIBRARY_PATH="$target" /tmp/test_signal_chain 2>&1
+          rc=$?
+          set -e
+          echo "signal chain test exit code: $rc"
+          if [ $rc -ne 0 ]; then
+            echo "::warning::Go signal handler chaining test FAILED (exit $rc). This may explain the SI_KERNEL crashes."
+          fi
+
       - name: Validate native struct layouts
         shell: bash
         run: |
