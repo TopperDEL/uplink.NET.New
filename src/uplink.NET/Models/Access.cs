@@ -389,15 +389,32 @@ public class Access : IDisposable
 
     private void ReleaseProjectLease(nint projectHandle)
     {
+        bool releaseHandles;
+
         lock (_lifetimeSync)
         {
             if (_activeProjectLeases == 0)
                 throw new InvalidOperationException("Project lease released without an active lease.");
 
+            _activeProjectLeases--;
+            releaseHandles = _disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0;
+        }
+
+        try
+        {
             if (projectHandle != nint.Zero)
                 UplinkInterop.FreeProjectHandle(projectHandle);
-
-            _activeProjectLeases--;
+        }
+        finally
+        {
+            if (releaseHandles)
+            {
+                lock (_lifetimeSync)
+                {
+                    if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
+                        ReleaseHandlesNoLock();
+                }
+            }
         }
     }
 
