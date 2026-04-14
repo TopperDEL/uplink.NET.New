@@ -150,7 +150,9 @@ jobs:
           workspace = Path(os.environ["GITHUB_WORKSPACE"])
           bundle_dir = Path(os.environ["CRASH_ANALYSIS_DIR"])
           bundle_dir.mkdir(parents=True, exist_ok=True)
-          max_interesting_strings_per_dump = 50
+          max_interesting_strings_per_dump = 50  # Keep metadata small enough for quick artifact review.
+          interesting_string_suffixes = (".dll", ".deps.json")
+          strings_command = shutil.which("strings")
 
           candidate_roots = [bundle_dir, workspace, Path("/tmp")]
           dump_patterns = ("core", "core.*", "*.core", "coredump*", "*.dmp")
@@ -203,29 +205,32 @@ jobs:
               ("uname.txt", ["uname", "-a"]),
           ]
 
-          for file_name, command in commands:
-              completed = subprocess.run(command, check=False, capture_output=True, text=True)
+          def run_command(command, *, errors="strict"):
+              completed = subprocess.run(command, check=False, capture_output=True, text=True, errors=errors)
               output = completed.stdout
               if completed.stderr:
                   output = f"{output}\n{completed.stderr}" if output else completed.stderr
-              (metadata_dir / file_name).write_text(output, encoding="utf-8")
+              if completed.returncode != 0:
+                  output = f"[exit code {completed.returncode}]\n{output}" if output else f"[exit code {completed.returncode}]"
+              return output
+
+          for file_name, command in commands:
+              (metadata_dir / file_name).write_text(run_command(command), encoding="utf-8")
 
           file_output_lines = []
           strings_output_lines = []
           for dump_path in dump_paths:
-              file_result = subprocess.run(["file", str(dump_path)], check=False, capture_output=True, text=True)
-              file_output_lines.append(file_result.stdout.strip() or file_result.stderr.strip())
+              file_output_lines.append(run_command(["file", str(dump_path)]).strip())
 
-              strings_result = subprocess.run(
-                  ["strings", str(dump_path)],
-                  check=False,
-                  capture_output=True,
-                  text=True,
-                  errors="replace")
-              interesting_lines = [
-                  line for line in strings_result.stdout.splitlines()
-                  if "runtimeconfig" in line or line.endswith(".dll") or line.endswith(".deps.json")
-              ]
+              if strings_command is None:
+                  interesting_lines = ["<strings command is not available on this runner>"]
+              else:
+                  strings_output = run_command([strings_command, str(dump_path)], errors="replace")
+                  interesting_lines = [
+                      line for line in strings_output.splitlines()
+                      if "runtimeconfig" in line or line.endswith(interesting_string_suffixes)
+                  ]
+
               strings_output_lines.append(f"# {dump_path.name}")
               strings_output_lines.extend(
                   interesting_lines[:max_interesting_strings_per_dump] or ["<no runtimeconfig/deps/dll strings found>"])
