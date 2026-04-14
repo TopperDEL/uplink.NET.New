@@ -180,63 +180,112 @@ earlier, on this same thread, inside the signal handler itself.
   correct and would produce `ObjectDisposedException` or use-after-free
   with `SEGV_MAPERR` / `SEGV_ACCERR`, not `SI_KERNEL`.
 
-## Sigaltstack hypothesis — tested and disproven
+## Root cause identified: SIGRT_2 handler overflows Go's 16 KB sigaltstack
 
-Installed a 1 MB sigaltstack per thread via `scripts/ci/sigstack_fix.c`,
-called from `SigStackFix.EnsureOnCurrentThread()` in the `Access`
-constructor and `AcquireProjectLease`. Two iterations:
+### The strace evidence (job 71263554933, run 24398819014)
 
-- **v1**: installed *before* cgo. Go's `minitSignalStack()` overwrote it
-  *during* the first cgo call on each thread. Crash unchanged.
-- **v2**: installed *after* cgo return too, with actual size-check guard
-  instead of boolean flag. Verified locally that the stack IS 1 MB after
-  the call. **Crash still unchanged** — same `si_code=SI_KERNEL`,
-  `si_addr=0x0` (core: run 24389443921, job 71243569273).
+Running `dotnet test` under `strace -f -e trace=signal` captured the
+exact signal sequence at the moment of the crash:
 
-The crash site did shift (from libc futex-wrapper prologue at offset
-`0xd40` to a `call` instruction at offset `0x4ea` with a much larger
-stack frame), but the signal metadata is identical. This rules out
-sigaltstack overflow as the mechanism.
+```
+5962  12:28:00 sigaltstack({ss_sp=NULL, ss_flags=SS_DISABLE, ss_size=2048},
+                          {ss_sp=0x7fd4600ab000, ss_flags=0, ss_size=16384}) = 0
+5962  12:28:00 +++ exited with 0 +++
+5911  12:28:00 tgkill(5771, 5963, SIGRT_2)
+5963  12:28:00 --- SIGRT_2 {si_signo=SIGRT_2, si_code=SI_TKILL} ---
+5963  12:28:00 --- SIGSEGV {si_signo=SIGSEGV, si_code=SEGV_ACCERR, si_addr=0x7fd4600a7ff0} ---
+5963  12:28:00 --- SIGSEGV {si_signo=SIGSEGV, si_code=SI_KERNEL, si_addr=NULL} ---
+              ... 20+ threads killed by SIGSEGV (core dumped) ...
+```
 
-## Revised hypothesis: Go signal handler not chaining to CoreCLR
+Three signals on thread 5963 in rapid succession:
 
-`si_code=SI_KERNEL` with `si_addr=0x0` is also consistent with a
-**nested SIGSEGV** — specifically, Go's cgo signal handler receiving a
-SIGSEGV it doesn't know how to handle (e.g., CoreCLR's managed null-ref
-probe on a thread that has entered cgo), *failing to chain* to CoreCLR's
-previously-installed handler, and calling `dieFromSignal(SIGSEGV)` which
-re-raises SIGSEGV via `raise()`. The nested signal during handler
-execution causes the kernel to deliver SI_KERNEL.
+1. **`SIGRT_2`** — Go's internal preemption signal, sent by thread 5911
+   via `tgkill`. Go uses SIGRT_2 (not SIGURG with `asyncpreemptoff=1`)
+   for cooperative preemption scheduling.
+2. **`SIGSEGV` with `si_code=SEGV_ACCERR` at `0x7fd4600a7ff0`** — a real
+   access-permission fault. This address is at the guard page immediately
+   below a 16 KB sigaltstack whose top was at `0x7fd4600ab000`:
+   - stack base = `0x7fd4600ab000 - 0x4000 = 0x7fd4600a7000`
+   - fault addr = `0x7fd4600a7ff0`
+   - offset below base = `0x10` (16 bytes into the guard page)
+3. **`SIGSEGV` with `si_code=SI_KERNEL`** — the kernel cannot deliver a
+   nested SIGSEGV while the previous one is being handled on the same
+   alt stack. It calls `force_sig(SIGSEGV)` which kills the process.
 
-Go's signal forwarding logic (`sigfwdgo` in `runtime/signal_unix.go`)
-should detect "not from Go" and chain to the previous handler. Known Go
-issues where this fails:
+### The mechanism
 
-- [go#21897](https://github.com/golang/go/issues/21897): cgo crash
-  handler does not chain to previous SIGSEGV handler.
-- [go#35814](https://github.com/golang/go/issues/35814): signal delivery
-  and Go signal handler interaction.
-- [go#47145](https://github.com/golang/go/issues/47145): SIGSEGV not
-  forwarded to previous handler in cgo.
+1. Thread 5963 is a Go M thread with a 16 KB sigaltstack.
+2. Thread 5911 sends `SIGRT_2` to 5963 for goroutine preemption.
+3. The kernel delivers SIGRT_2 on thread 5963's sigaltstack (16 KB).
+4. Go's SIGRT_2 handler runs and **overflows the 16 KB alt stack**,
+   writing past the bottom into the guard page.
+5. The guard-page write triggers `SIGSEGV (SEGV_ACCERR)` at the
+   guard address.
+6. The kernel tries to deliver this SIGSEGV but thread 5963 is already
+   on the sigaltstack handling SIGRT_2. The kernel cannot set up another
+   signal frame → calls `force_sig(SIGSEGV)` with `SI_KERNEL`.
+7. Process is killed. Core dump is written.
 
-Whether Go 1.25 still has a version of this bug is an open question.
-The fix would be upstream in Go's runtime, not in this project.
+### Why previous sigaltstack fix didn't work
 
-### Testing this hypothesis
+The 1 MB sigaltstack fix (via `SigStackFix.EnsureOnCurrentThread()`)
+was installed on .NET managed threads from `Access.AcquireProjectLease`
+and the `Access` constructor. But thread 5963 is a **Go runtime M
+thread** — it was created by Go's scheduler, not by .NET. Our fix never
+ran on it. Go sets its own 16 KB sigaltstack on all its threads via
+`minitSignalStack()`.
 
-1. **Write a standalone C program** that installs a SIGSEGV handler
-   (mimicking CoreCLR), then loads `libstorj_uplink.so` via `dlopen`,
-   calls a function, and then deliberately raises SIGSEGV. If Go's
-   handler eats the signal instead of chaining → confirmed.
+### Why `asyncpreemptoff=1` didn't help
 
-2. **Add `signal(SIGSEGV, SIG_DFL)` from our shim** right after Go's cgo
-   init. If the crash changes from SI_KERNEL to SEGV_MAPERR (a real
-   page fault that kills the process normally) → confirmed it was
-   Go's handler re-raising.
+`asyncpreemptoff=1` disables SIGURG-based async preemption (Go 1.14+).
+But Go also uses SIGRT_2 for other internal signaling between Ms. The
+SIGRT_2 in the strace is `SI_TKILL` (sent explicitly by thread 5911),
+not the async preemption path. `asyncpreemptoff` does not disable all
+inter-M signaling.
 
-3. **Check if Go writes a goroutine dump to stderr** before dying. If
-   `badsignal` fires, Go prints "unexpected fault address" or similar.
-   We should capture the test host's stderr into a file and inspect.
+### Earlier hypotheses — tested and ruled out
+
+| Hypothesis | How tested | Result |
+| --- | --- | --- |
+| Sigaltstack overflow on .NET threads | 1 MB shim on managed threads, pre+post cgo | Crash unchanged — the overflowing thread is a Go thread, not .NET |
+| Go handler not chaining SIGSEGV to CoreCLR | Standalone C test on arm64 + amd64 | PASS — Go chains correctly |
+| Go SIGURG preemption causing signal failure | `GODEBUG=asyncpreemptoff=1` | Crash persists — it's SIGRT_2, not SIGURG |
+| CoreCLR handler double-fault | `DOTNET_EnableAlternateStackCheck=1`, `DOTNET_EnableWriteXorExecute=0`, stderr capture | No CoreCLR output; crash is on a Go thread |
+| W^X JIT page protection | `DOTNET_EnableWriteXorExecute=0` | Crash unchanged |
+
+### Correlation with concurrency
+
+The crash requires heavy concurrent cgo activity because:
+- More concurrent cgo calls → more Go M threads → more sigaltstacks.
+- More inter-M signaling (SIGRT_2 for work-stealing, goroutine handoff).
+- Higher chance that one SIGRT_2 handler call exceeds 16 KB on the alt
+  stack. The overflow depends on what the handler touches: Go's scheduler
+  state, goroutine context save, etc. Deeper scheduler call chains →
+  more stack usage → higher overflow probability.
+
+### Fix
+
+The root fix is upstream in Go: Go's sigaltstack of 16 KB is too small
+for its own SIGRT_2 handler under heavy scheduling load. Options:
+
+1. **Increase Go's sigaltstack size.** Go 1.25 uses 16384 bytes.
+   `MINSIGSTKSZ` on Linux x86_64 is 2048, `SIGSTKSZ` is 8192, but
+   Go's handler needs more under load. Increasing to 64 KB or 128 KB
+   would provide headroom. This requires a Go runtime change.
+
+2. **Reduce SIGRT_2 handler stack usage.** Go's scheduler code runs in
+   the handler context; deep call chains can overflow. Making the
+   handler thinner (defer work to a goroutine) would reduce stack
+   pressure.
+
+3. **Workaround in uplink-c or uplink.NET**: intercept Go's thread
+   creation and install a larger sigaltstack on Go-spawned threads.
+   This is fragile — Go doesn't expose thread-creation hooks.
+
+4. **Reduce concurrency** to lower the number of active Go M threads
+   and thus the frequency of inter-M signaling. Pragmatic but doesn't
+   fix the underlying issue.
 
 ## Proposed experiments (ordered by cost)
 
