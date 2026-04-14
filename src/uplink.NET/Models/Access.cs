@@ -375,6 +375,18 @@ public class Access : IDisposable
         }
     }
 
+    private void ReleaseAccessLease()
+    {
+        lock (_lifetimeSync)
+        {
+            if (_activeAccessLeases > 0)
+                _activeAccessLeases--;
+
+            if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
+                ReleaseHandlesNoLock();
+        }
+    }
+
     private void ReleaseProjectLease(nint projectHandle)
     {
         if (projectHandle != nint.Zero)
@@ -386,18 +398,6 @@ public class Access : IDisposable
                 throw new InvalidOperationException("Project lease released without an active lease.");
 
             _activeProjectLeases--;
-        }
-    }
-
-    private void ReleaseAccessLease()
-    {
-        lock (_lifetimeSync)
-        {
-            if (_activeAccessLeases > 0)
-                _activeAccessLeases--;
-
-            if (_disposeRequested && _activeAccessLeases == 0 && _activeProjectLeases == 0)
-                ReleaseHandlesNoLock();
         }
     }
 

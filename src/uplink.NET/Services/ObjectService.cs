@@ -274,20 +274,22 @@ public class ObjectService : IObjectService
         var projectLease = _access.AcquireProjectLease();
         return Task.Run(() =>
         {
-            var handle = nint.Zero;
-            try
+            using (projectLease)
             {
-                handle = OpenDownloadHandle(projectLease.Handle, bucketName, key, downloadOptions);
-                var length = GetDownloadLength(handle, downloadOptions, bucketName, key);
-                var stream = new DownloadStream(handle, length, _access);
-                handle = nint.Zero;
-                return stream;
-            }
-            finally
-            {
-                if (handle != nint.Zero)
-                    UplinkInterop.FreeDownloadHandle(handle);
-                projectLease.Dispose();
+                var handle = nint.Zero;
+                try
+                {
+                    handle = OpenDownloadHandle(projectLease.Handle, bucketName, key, downloadOptions);
+                    var length = GetDownloadLength(handle, downloadOptions, bucketName, key);
+                    var stream = new DownloadStream(handle, length, _access);
+                    handle = nint.Zero;
+                    return stream;
+                }
+                finally
+                {
+                    if (handle != nint.Zero)
+                        UplinkInterop.FreeDownloadHandle(handle);
+                }
             }
         });
     }
