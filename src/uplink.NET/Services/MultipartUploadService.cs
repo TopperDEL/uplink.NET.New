@@ -97,45 +97,48 @@ public class MultipartUploadService : IMultipartUploadService
     {
         using var projectLease = _access.AcquireProjectLease();
         var uploadResult = new PartUploadResult();
+        var beginResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+        {
+            ["op"]            = "multipart_part_begin",
+            ["project_id"]    = projectLease.Handle,
+            ["bucket"]        = bucketName,
+            ["key"]           = objectKey,
+            ["upload_id_str"] = uploadId,
+            ["part_number"]   = (long)partNumber
+        }).ConfigureAwait(false);
+
+        if (beginResult.IsError)
+        {
+            uploadResult.Error = beginResult.ErrorMessage ?? "Unknown error";
+            return uploadResult;
+        }
+
+        var partUploadId = beginResult.Data.TryGetProperty("part_upload_id", out var pu)
+            ? pu.GetInt64()
+            : 0L;
+
+        if (partUploadId == 0)
+        {
+            uploadResult.Error = "Native worker returned an invalid multipart part upload handle.";
+            return uploadResult;
+        }
 
         long totalWritten = 0;
-        if (partBytes.Length == 0)
-        {
-            var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
-            {
-                ["op"]            = "multipart_upload_part",
-                ["project_id"]    = projectLease.Handle,
-                ["bucket"]        = bucketName,
-                ["key"]           = objectKey,
-                ["upload_id_str"] = uploadId,
-                ["part_number"]   = (long)partNumber,
-                ["data_b64"]      = string.Empty
-            }).ConfigureAwait(false);
-
-            if (result.IsError)
-            {
-                uploadResult.Error = result.ErrorMessage ?? "Unknown error";
-                return uploadResult;
-            }
-        }
-        else
+        try
         {
             for (int offset = 0; offset < partBytes.Length; offset += ChunkSizeBytes)
             {
                 int count = Math.Min(ChunkSizeBytes, partBytes.Length - offset);
                 var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
                 {
-                    ["op"]            = "multipart_upload_part",
-                    ["project_id"]    = projectLease.Handle,
-                    ["bucket"]        = bucketName,
-                    ["key"]           = objectKey,
-                    ["upload_id_str"] = uploadId,
-                    ["part_number"]   = (long)partNumber,
+                    ["op"]             = "multipart_part_write",
+                    ["part_upload_id"] = partUploadId,
                     ["data_b64"]      = Convert.ToBase64String(partBytes, offset, count)
                 }).ConfigureAwait(false);
 
                 if (result.IsError)
                 {
+                    await AbortPartUploadAsync(partUploadId).ConfigureAwait(false);
                     uploadResult.Error = result.ErrorMessage ?? "Unknown error";
                     return uploadResult;
                 }
@@ -146,16 +149,49 @@ public class MultipartUploadService : IMultipartUploadService
 
                 if (bytesWritten != count)
                 {
+                    await AbortPartUploadAsync(partUploadId).ConfigureAwait(false);
                     uploadResult.Error = $"Multipart upload write mismatch at offset {offset}: wrote {bytesWritten} bytes, expected {count}.";
                     return uploadResult;
                 }
 
                 totalWritten += bytesWritten;
             }
+
+            var commitResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+            {
+                ["op"]             = "multipart_part_commit",
+                ["part_upload_id"] = partUploadId
+            }).ConfigureAwait(false);
+
+            if (commitResult.IsError)
+            {
+                uploadResult.Error = commitResult.ErrorMessage ?? "Unknown error";
+                return uploadResult;
+            }
+        }
+        catch
+        {
+            await AbortPartUploadAsync(partUploadId).ConfigureAwait(false);
+            throw;
         }
 
         uploadResult.BytesWritten = (uint)totalWritten;
         return uploadResult;
+    }
+
+    private static async Task AbortPartUploadAsync(long partUploadId)
+    {
+        try
+        {
+            await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+            {
+                ["op"]             = "multipart_part_abort",
+                ["part_upload_id"] = partUploadId
+            }).ConfigureAwait(false);
+        }
+        catch
+        {
+        }
     }
 
     public Task UploadPartSetETagAsync(PartUpload partUpload, string eTag)

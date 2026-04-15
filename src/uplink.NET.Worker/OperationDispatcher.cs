@@ -12,6 +12,7 @@ internal sealed class OperationDispatcher
     private readonly HandleRegistry _accessHandles  = new();
     private readonly HandleRegistry _projectHandles = new();
     private readonly HandleRegistry _uploadHandles  = new();
+    private readonly HandleRegistry _partUploadHandles = new();
     private readonly HandleRegistry _downloadHandles = new();
 
     internal Dictionary<string, object?> Dispatch(JsonElement req, string op)
@@ -47,6 +48,10 @@ internal sealed class OperationDispatcher
                 "multipart_begin"        => MultipartBegin(req),
                 "multipart_commit"       => MultipartCommit(req),
                 "multipart_abort"        => MultipartAbort(req),
+                "multipart_part_begin"   => MultipartPartBegin(req),
+                "multipart_part_write"   => MultipartPartWrite(req),
+                "multipart_part_commit"  => MultipartPartCommit(req),
+                "multipart_part_abort"   => MultipartPartAbort(req),
                 "multipart_upload_part"  => MultipartUploadPart(req),
                 "multipart_list"         => MultipartList(req),
                 "multipart_list_parts"   => MultipartListParts(req),
@@ -941,14 +946,13 @@ internal sealed class OperationDispatcher
         return Ok();
     }
 
-    private unsafe Dictionary<string, object?> MultipartUploadPart(JsonElement req)
+    private unsafe Dictionary<string, object?> MultipartPartBegin(JsonElement req)
     {
         long projectId  = GetLong(req, "project_id");
         var bucket      = GetStr(req, "bucket");
         var key         = GetStr(req, "key");
         var uploadIdStr = GetStr(req, "upload_id_str");
         uint partNumber = (uint)GetLong(req, "part_number");
-        var dataB64     = GetStr(req, "data_b64");
         var handle      = _projectHandles.Get(projectId);
 
         var partResult = UplinkInterop.uplink_upload_part(handle, bucket, key, uploadIdStr, partNumber);
@@ -970,64 +974,135 @@ internal sealed class OperationDispatcher
         if (partHandle == nint.Zero)
             return Error("Native library returned a null part upload handle.", -1);
 
+        long partUploadId = _partUploadHandles.Register(partHandle);
+        return Ok(new() { ["part_upload_id"] = partUploadId });
+    }
+
+    private unsafe Dictionary<string, object?> MultipartPartWrite(JsonElement req)
+    {
+        long partUploadId = GetLong(req, "part_upload_id");
+        var dataB64       = GetStr(req, "data_b64");
+        var partHandle    = _partUploadHandles.Get(partUploadId);
+
+        if (string.IsNullOrEmpty(dataB64))
+            return Ok(new() { ["bytes_written"] = 0L });
+
         try
         {
-            var data = string.IsNullOrEmpty(dataB64) ? Array.Empty<byte>() : Convert.FromBase64String(dataB64);
+            var data = Convert.FromBase64String(dataB64);
             long totalWritten = 0;
-
-            if (data.Length > 0)
+            const int chunkSize = 80 * 1024;
+            int offset = 0;
+            while (offset < data.Length)
             {
-                const int chunkSize = 80 * 1024;
-                int offset = 0;
-                while (offset < data.Length)
+                int toWrite = Math.Min(chunkSize, data.Length - offset);
+                UplinkInterop.UplinkWriteResult writeResult;
+                var gcHandle = System.Runtime.InteropServices.GCHandle.Alloc(data, System.Runtime.InteropServices.GCHandleType.Pinned);
+                try
                 {
-                    int toWrite = Math.Min(chunkSize, data.Length - offset);
-                    UplinkInterop.UplinkWriteResult writeResult;
-                    var gcHandle = System.Runtime.InteropServices.GCHandle.Alloc(data, System.Runtime.InteropServices.GCHandleType.Pinned);
-                    try
-                    {
-                        var ptr = (void*)(gcHandle.AddrOfPinnedObject() + offset);
-                        writeResult = UplinkInterop.uplink_part_upload_write(partHandle, ptr, (nuint)toWrite);
-                    }
-                    finally
-                    {
-                        gcHandle.Free();
-                    }
-
-                    try
-                    {
-                        if (writeResult.error != nint.Zero)
-                        {
-                            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
-                            return Error(msg, code);
-                        }
-
-                        int written = (int)(nuint)writeResult.bytes_written;
-                        if (written == 0)
-                            return Error("Part upload write stalled: 0 bytes written.", -1);
-
-                        totalWritten += written;
-                        offset += written;
-                    }
-                    finally
-                    {
-                        UplinkInterop.uplink_free_write_result(writeResult);
-                    }
+                    var ptr = (void*)(gcHandle.AddrOfPinnedObject() + offset);
+                    writeResult = UplinkInterop.uplink_part_upload_write(partHandle, ptr, (nuint)toWrite);
                 }
-            }
+                finally
+                {
+                    gcHandle.Free();
+                }
 
-            var commitErr = UplinkInterop.uplink_part_upload_commit(partHandle);
-            if (commitErr != nint.Zero)
-            {
-                var (msg, code) = UplinkInterop.ConsumeError(commitErr);
-                return Error(msg, code);
+                try
+                {
+                    if (writeResult.error != nint.Zero)
+                    {
+                        var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                        return Error(msg, code);
+                    }
+
+                    int written = (int)(nuint)writeResult.bytes_written;
+                    if (written == 0)
+                        return Error("Part upload write stalled: 0 bytes written.", -1);
+
+                    totalWritten += written;
+                    offset += written;
+                }
+                finally
+                {
+                    UplinkInterop.uplink_free_write_result(writeResult);
+                }
             }
 
             return Ok(new() { ["bytes_written"] = totalWritten });
         }
+        catch (FormatException ex)
+        {
+            return Error(ex.Message, -1);
+        }
+    }
+
+    private Dictionary<string, object?> MultipartPartCommit(JsonElement req)
+    {
+        long partUploadId = GetLong(req, "part_upload_id");
+        if (!_partUploadHandles.Remove(partUploadId, out var partHandle) || partHandle == nint.Zero)
+            return Error($"Multipart part upload handle {partUploadId} not found.", -1);
+
+        var commitErr = UplinkInterop.uplink_part_upload_commit(partHandle);
+        UplinkInterop.FreePartUploadHandle(partHandle);
+
+        if (commitErr != nint.Zero)
+        {
+            var (msg, code) = UplinkInterop.ConsumeError(commitErr);
+            return Error(msg, code);
+        }
+
+        return Ok();
+    }
+
+    private Dictionary<string, object?> MultipartPartAbort(JsonElement req)
+    {
+        long partUploadId = GetLong(req, "part_upload_id");
+        if (!_partUploadHandles.Remove(partUploadId, out var partHandle) || partHandle == nint.Zero)
+            return Ok();
+
+        UplinkInterop.FreePartUploadHandle(partHandle);
+        return Ok();
+    }
+
+    private unsafe Dictionary<string, object?> MultipartUploadPart(JsonElement req)
+    {
+        var beginResult = MultipartPartBegin(req);
+        if (beginResult.TryGetValue("err", out _))
+            return beginResult;
+
+        long partUploadId = Convert.ToInt64(beginResult["part_upload_id"], System.Globalization.CultureInfo.InvariantCulture);
+
+        try
+        {
+            var writeReq = JsonSerializer.SerializeToElement(new Dictionary<string, object?>
+            {
+                ["part_upload_id"] = partUploadId,
+                ["data_b64"] = GetStr(req, "data_b64")
+            });
+
+            var writeResult = MultipartPartWrite(writeReq);
+            if (writeResult.TryGetValue("err", out _))
+                return writeResult;
+
+            var commitReq = JsonSerializer.SerializeToElement(new Dictionary<string, object?>
+            {
+                ["part_upload_id"] = partUploadId
+            });
+
+            var commitResult = MultipartPartCommit(commitReq);
+            if (commitResult.TryGetValue("err", out _))
+                return commitResult;
+
+            return writeResult;
+        }
         finally
         {
-            UplinkInterop.FreePartUploadHandle(partHandle);
+            var abortReq = JsonSerializer.SerializeToElement(new Dictionary<string, object?>
+            {
+                ["part_upload_id"] = partUploadId
+            });
+            MultipartPartAbort(abortReq);
         }
     }
 
