@@ -1,6 +1,6 @@
-using System.Runtime.InteropServices;
 using uplink.NET.Exceptions;
 using uplink.NET.Interfaces;
+using uplink.NET.Ipc;
 using uplink.NET.Models;
 using uplink.NET.Native;
 
@@ -15,275 +15,118 @@ public class BucketService : IBucketService
         _access = access ?? throw new ArgumentNullException(nameof(access));
     }
 
-    public Task<Bucket> CreateBucketAsync(string bucketName)
+    public async Task<Bucket> CreateBucketAsync(string bucketName)
     {
-        var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
+        using var projectLease = _access.AcquireProjectLease();
+        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
         {
-            try
-            {
-                return CreateBucket(projectLease.Handle, bucketName);
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
+            ["op"]         = "bucket_create",
+            ["project_id"] = projectLease.Handle,
+            ["name"]       = bucketName
+        }).ConfigureAwait(false);
+
+        if (result.IsError)
+            throw new BucketCreationException(bucketName, result.ErrorMessage!);
+
+        return ParseBucket(result);
     }
 
-    public Task<Bucket> EnsureBucketAsync(string bucketName)
+    public async Task<Bucket> EnsureBucketAsync(string bucketName)
     {
-        var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
+        using var projectLease = _access.AcquireProjectLease();
+        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
         {
-            try
-            {
-                return EnsureBucket(projectLease.Handle, bucketName);
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
+            ["op"]         = "bucket_ensure",
+            ["project_id"] = projectLease.Handle,
+            ["name"]       = bucketName
+        }).ConfigureAwait(false);
+
+        if (result.IsError)
+            throw new BucketCreationException(bucketName, result.ErrorMessage!);
+
+        return ParseBucket(result);
     }
 
-    public Task<Bucket> GetBucketAsync(string bucketName)
+    public async Task<Bucket> GetBucketAsync(string bucketName)
     {
-        var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
+        using var projectLease = _access.AcquireProjectLease();
+        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
         {
-            try
-            {
-                return StatBucket(projectLease.Handle, bucketName);
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
+            ["op"]         = "bucket_stat",
+            ["project_id"] = projectLease.Handle,
+            ["name"]       = bucketName
+        }).ConfigureAwait(false);
+
+        if (result.IsError)
+            throw new BucketNotFoundException(bucketName, result.ErrorMessage!);
+
+        return ParseBucket(result);
     }
 
-    public Task<BucketList> ListBucketsAsync(ListBucketsOptions listBucketsOptions)
+    public async Task<BucketList> ListBucketsAsync(ListBucketsOptions listBucketsOptions)
     {
-        var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
+        using var projectLease = _access.AcquireProjectLease();
+        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
         {
-            try
-            {
-                return ListBuckets(projectLease.Handle, listBucketsOptions);
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
-    }
+            ["op"]         = "bucket_list",
+            ["project_id"] = projectLease.Handle,
+            ["cursor"]     = listBucketsOptions.Cursor ?? string.Empty
+        }).ConfigureAwait(false);
 
-    public Task DeleteBucketAsync(string bucketName)
-    {
-        var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
-        {
-            try
-            {
-                DeleteBucket(projectLease.Handle, bucketName);
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
-    }
-
-    public Task DeleteBucketWithObjectsAsync(string bucketName)
-    {
-        var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
-        {
-            try
-            {
-                DeleteBucketWithObjects(projectLease.Handle, bucketName);
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
-    }
-
-    // ── Private sync implementations ─────────────────────────────────────────
-
-    private Bucket CreateBucket(nint projectHandle, string bucketName)
-    {
-        using var trace = _access.Trace("uplink_create_bucket", ("bucket", bucketName));
-        var result = UplinkInterop.uplink_create_bucket(projectHandle, bucketName);
-        try
-        {
-            if (result.error != nint.Zero)
-            {
-                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                trace?.NativeError(msg, code);
-                throw new BucketCreationException(bucketName, msg);
-            }
-
-            if (result.bucket == nint.Zero)
-            {
-                trace?.Fail("Native library returned a null bucket result without an error.");
-                throw new BucketCreationException(bucketName, "Native library returned a null bucket result without an error.");
-            }
-
-            trace?.Success();
-            return UplinkInterop.MarshalBucket(result.bucket);
-        }
-        finally
-        {
-            UplinkInterop.uplink_free_bucket_result(result);
-        }
-    }
-
-    private Bucket EnsureBucket(nint projectHandle, string bucketName)
-    {
-        using var trace = _access.Trace("uplink_ensure_bucket", ("bucket", bucketName));
-        var result = UplinkInterop.uplink_ensure_bucket(projectHandle, bucketName);
-        try
-        {
-            if (result.error != nint.Zero)
-            {
-                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                trace?.NativeError(msg, code);
-                throw new BucketCreationException(bucketName, msg);
-            }
-
-            if (result.bucket == nint.Zero)
-            {
-                trace?.Fail("Native library returned a null bucket result without an error.");
-                throw new BucketCreationException(bucketName, "Native library returned a null bucket result without an error.");
-            }
-
-            trace?.Success();
-            return UplinkInterop.MarshalBucket(result.bucket);
-        }
-        finally
-        {
-            UplinkInterop.uplink_free_bucket_result(result);
-        }
-    }
-
-    private Bucket StatBucket(nint projectHandle, string bucketName)
-    {
-        using var trace = _access.Trace("uplink_stat_bucket", ("bucket", bucketName));
-        var result = UplinkInterop.uplink_stat_bucket(projectHandle, bucketName);
-        try
-        {
-            if (result.error != nint.Zero)
-            {
-                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                trace?.NativeError(msg, code);
-                throw new BucketNotFoundException(bucketName, msg);
-            }
-
-            if (result.bucket == nint.Zero)
-            {
-                trace?.Fail("Native library returned a null bucket result without an error.");
-                throw new BucketNotFoundException(bucketName, "Native library returned a null bucket result without an error.");
-            }
-
-            trace?.Success();
-            return UplinkInterop.MarshalBucket(result.bucket);
-        }
-        finally
-        {
-            UplinkInterop.uplink_free_bucket_result(result);
-        }
-    }
-
-    private unsafe BucketList ListBuckets(nint projectHandle, ListBucketsOptions opts)
-    {
-        using var trace = _access.Trace("uplink_list_buckets", ("cursor", opts.Cursor ?? string.Empty));
-        var nativeOpts = new UplinkInterop.UplinkListBucketsOptions
-        {
-            cursor = opts.Cursor != null
-                ? Marshal.StringToCoTaskMemUTF8(opts.Cursor)
-                : nint.Zero
-        };
-
-        nint iterator = UplinkInterop.uplink_list_buckets(projectHandle, &nativeOpts);
-
-        if (nativeOpts.cursor != nint.Zero)
-            Marshal.FreeCoTaskMem(nativeOpts.cursor);
+        if (result.IsError)
+            throw new BucketListException(result.ErrorMessage!);
 
         var list = new BucketList();
-        try
+        if (result.Data.TryGetProperty("buckets", out var bucketsElem))
         {
-            if (iterator == nint.Zero)
+            foreach (var b in bucketsElem.EnumerateArray())
             {
-                trace?.Fail("Native library returned a null bucket iterator without an error.");
-                throw new BucketListException("Native library returned a null bucket iterator without an error.");
+                list.Items.Add(new Bucket
+                {
+                    Name    = b.TryGetProperty("name",    out var n) ? n.GetString() ?? string.Empty : string.Empty,
+                    Created = b.TryGetProperty("created", out var c)
+                        ? DateTimeOffset.FromUnixTimeSeconds(c.GetInt64()).UtcDateTime
+                        : DateTime.MinValue
+                });
             }
-
-            while (UplinkInterop.uplink_bucket_iterator_next(iterator))
-            {
-                nint bucketPtr = UplinkInterop.uplink_bucket_iterator_item(iterator);
-                list.Items.Add(UplinkInterop.MarshalBucket(bucketPtr));
-            }
-
-            nint errPtr = UplinkInterop.uplink_bucket_iterator_err(iterator);
-            if (errPtr != nint.Zero)
-            {
-                var (msg, code) = UplinkInterop.ConsumeError(errPtr);
-                trace?.NativeError(msg, code);
-                throw new BucketListException(msg);
-            }
-
-            trace?.Success();
-        }
-        finally
-        {
-            UplinkInterop.uplink_free_bucket_iterator(iterator);
         }
 
         return list;
     }
 
-    private void DeleteBucket(nint projectHandle, string bucketName)
+    public async Task DeleteBucketAsync(string bucketName)
     {
-        using var trace = _access.Trace("uplink_delete_bucket", ("bucket", bucketName));
-        var result = UplinkInterop.uplink_delete_bucket(projectHandle, bucketName);
-        try
+        using var projectLease = _access.AcquireProjectLease();
+        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
         {
-            if (result.error != nint.Zero)
-            {
-                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                trace?.NativeError(msg, code);
-                throw new BucketDeletionException(bucketName, msg);
-            }
+            ["op"]         = "bucket_delete",
+            ["project_id"] = projectLease.Handle,
+            ["name"]       = bucketName
+        }).ConfigureAwait(false);
 
-            trace?.Success();
-        }
-        finally
-        {
-            UplinkInterop.uplink_free_bucket_result(result);
-        }
+        if (result.IsError)
+            throw new BucketDeletionException(bucketName, result.ErrorMessage!);
     }
 
-    private void DeleteBucketWithObjects(nint projectHandle, string bucketName)
+    public async Task DeleteBucketWithObjectsAsync(string bucketName)
     {
-        using var trace = _access.Trace("uplink_delete_bucket_with_objects", ("bucket", bucketName));
-        var result = UplinkInterop.uplink_delete_bucket_with_objects(projectHandle, bucketName);
-        try
+        using var projectLease = _access.AcquireProjectLease();
+        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
         {
-            if (result.error != nint.Zero)
-            {
-                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                trace?.NativeError(msg, code);
-                throw new BucketDeletionException(bucketName, msg);
-            }
+            ["op"]         = "bucket_delete_with_objects",
+            ["project_id"] = projectLease.Handle,
+            ["name"]       = bucketName
+        }).ConfigureAwait(false);
 
-            trace?.Success();
-        }
-        finally
-        {
-            UplinkInterop.uplink_free_bucket_result(result);
-        }
+        if (result.IsError)
+            throw new BucketDeletionException(bucketName, result.ErrorMessage!);
     }
+
+    private static Bucket ParseBucket(IpcResult result) => new Bucket
+    {
+        Name    = result.Data.TryGetProperty("bucket_name",    out var n) ? n.GetString() ?? string.Empty : string.Empty,
+        Created = result.Data.TryGetProperty("bucket_created", out var c)
+            ? DateTimeOffset.FromUnixTimeSeconds(c.GetInt64()).UtcDateTime
+            : DateTime.MinValue
+    };
 }

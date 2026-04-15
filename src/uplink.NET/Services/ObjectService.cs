@@ -1,7 +1,6 @@
-using System.Runtime.InteropServices;
-using NativeCallTrace = uplink.NET.Diagnostics.UplinkDiagnosticsSession.NativeCallTrace;
 using uplink.NET.Exceptions;
 using uplink.NET.Interfaces;
+using uplink.NET.Ipc;
 using uplink.NET.Models;
 using uplink.NET.Native;
 
@@ -20,43 +19,35 @@ public class ObjectService : IObjectService
 
     public Task<UploadOperation> UploadObjectAsync(
         string bucketName, string key, byte[] objectData)
-        => CreateUploadOpAsync(bucketName, key, objectData,
-            new UploadOptions(), null, startImmediately: true);
+        => CreateUploadOpAsync(bucketName, key, objectData, new UploadOptions(), null, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
         string bucketName, string key, byte[] objectData, bool startImmediately)
-        => CreateUploadOpAsync(bucketName, key, objectData,
-            new UploadOptions(), null, startImmediately);
+        => CreateUploadOpAsync(bucketName, key, objectData, new UploadOptions(), null, startImmediately);
 
     public Task<UploadOperation> UploadObjectAsync(
         string bucketName, string key, byte[] objectData, UploadOptions uploadOptions)
-        => CreateUploadOpAsync(bucketName, key, objectData,
-            uploadOptions, null, startImmediately: true);
+        => CreateUploadOpAsync(bucketName, key, objectData, uploadOptions, null, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
         string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, bool startImmediately)
-        => CreateUploadOpAsync(bucketName, key, objectData,
-            uploadOptions, null, startImmediately);
+        => CreateUploadOpAsync(bucketName, key, objectData, uploadOptions, null, startImmediately);
 
     public Task<UploadOperation> UploadObjectAsync(
         string bucketName, string key, byte[] objectData, CustomMetadata customMetadata)
-        => CreateUploadOpAsync(bucketName, key, objectData,
-            new UploadOptions(), customMetadata, startImmediately: true);
+        => CreateUploadOpAsync(bucketName, key, objectData, new UploadOptions(), customMetadata, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
         string bucketName, string key, byte[] objectData, CustomMetadata customMetadata, bool startImmediately)
-        => CreateUploadOpAsync(bucketName, key, objectData,
-            new UploadOptions(), customMetadata, startImmediately);
+        => CreateUploadOpAsync(bucketName, key, objectData, new UploadOptions(), customMetadata, startImmediately);
 
     public Task<UploadOperation> UploadObjectAsync(
         string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, CustomMetadata customMetadata)
-        => CreateUploadOpAsync(bucketName, key, objectData,
-            uploadOptions, customMetadata, startImmediately: true);
+        => CreateUploadOpAsync(bucketName, key, objectData, uploadOptions, customMetadata, startImmediately: true);
 
     public Task<UploadOperation> UploadObjectAsync(
         string bucketName, string key, byte[] objectData, UploadOptions uploadOptions, CustomMetadata customMetadata, bool startImmediately)
-        => CreateUploadOpAsync(bucketName, key, objectData,
-            uploadOptions, customMetadata, startImmediately);
+        => CreateUploadOpAsync(bucketName, key, objectData, uploadOptions, customMetadata, startImmediately);
 
     public async Task<UploadOperation> UploadObjectAsync(
         string bucketName, string key, Stream stream,
@@ -71,7 +62,6 @@ public class ObjectService : IObjectService
             startImmediately).ConfigureAwait(false);
     }
 
-    // Internal helper that all upload overloads funnel into
     private Task<UploadOperation> CreateUploadOpAsync(
         string bucketName, string key, byte[] objectData,
         UploadOptions? uploadOptions, CustomMetadata? customMetadata, bool startImmediately)
@@ -90,51 +80,57 @@ public class ObjectService : IObjectService
         return Task.FromResult(op);
     }
 
-    // ── Chunked upload ─────────────────────────────────────────────────────────
+    // ── Chunked upload ────────────────────────────────────────────────────────
 
-    public unsafe Task<ChunkedUploadOperation> UploadObjectChunkedAsync(
+    public async Task<ChunkedUploadOperation> UploadObjectChunkedAsync(
         string bucketName, string objectKey,
         UploadOptions? uploadOptions, CustomMetadata? customMetadata)
     {
         var projectLease = _access.AcquireProjectLease();
-        using var trace = _access.Trace("uplink_upload_object", ("bucket", bucketName), ("key", objectKey));
-        var opts = new UplinkInterop.UplinkUploadOptions
+        try
         {
-            expires = UplinkInterop.DateTimeToUnix(uploadOptions?.Expires)
-        };
+            var beginResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+            {
+                ["op"]         = "upload_begin",
+                ["project_id"] = projectLease.Handle,
+                ["bucket"]     = bucketName,
+                ["key"]        = objectKey,
+                ["expires"]    = UplinkInterop.DateTimeToUnix(uploadOptions?.Expires)
+            }).ConfigureAwait(false);
 
-        UplinkInterop.UplinkUploadResult uploadResult;
-        uploadResult = UplinkInterop.uplink_upload_object(
-            projectLease.Handle, bucketName, objectKey, &opts);
+            if (beginResult.IsError)
+            {
+                projectLease.Dispose();
+                throw new Exception($"Failed to begin chunked upload: {beginResult.ErrorMessage}");
+            }
 
-        if (uploadResult.error != nint.Zero)
+            long uploadId = beginResult.Data.GetProperty("upload_id").GetInt64();
+
+            if (customMetadata?.Entries.Count > 0)
+            {
+                var metaResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+                {
+                    ["op"]        = "upload_set_metadata",
+                    ["upload_id"] = uploadId,
+                    ["entries"]   = customMetadata.Entries
+                        .Select(kv => (object?)new Dictionary<string, object?> { ["key"] = kv.Key, ["value"] = kv.Value })
+                        .ToArray()
+                }).ConfigureAwait(false);
+
+                if (metaResult.IsError)
+                {
+                    projectLease.Dispose();
+                    throw new IOException($"Failed to set custom metadata: {metaResult.ErrorMessage}");
+                }
+            }
+
+            return new ChunkedUploadOperation(uploadId, objectKey, projectLease, _access);
+        }
+        catch
         {
-            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref uploadResult.error);
-            trace?.NativeError(msg, code);
-            UplinkInterop.uplink_free_upload_result(uploadResult);
             projectLease.Dispose();
-            throw new Exception($"Failed to begin upload: {msg}");
+            throw;
         }
-
-        var uploadHandle = uploadResult.upload;
-
-        if (uploadHandle == nint.Zero)
-        {
-            trace?.Fail("Native library returned a null upload handle without an error.");
-            UplinkInterop.uplink_free_upload_result(uploadResult);
-            projectLease.Dispose();
-            throw new Exception("Failed to begin upload: native library returned a null upload handle without an error.");
-        }
-
-        // Set custom metadata if supplied
-        if (customMetadata?.Entries.Count > 0)
-        {
-            using var metadataTrace = _access.Trace("uplink_upload_set_custom_metadata", ("bucket", bucketName), ("key", objectKey));
-            SetCustomMetadataNative(uploadHandle, customMetadata, metadataTrace);
-        }
-
-        trace?.Success();
-        return Task.FromResult(new ChunkedUploadOperation(uploadHandle, objectKey, projectLease, _access));
     }
 
     // ── List ──────────────────────────────────────────────────────────────────
@@ -142,152 +138,88 @@ public class ObjectService : IObjectService
     public Task<ObjectList> ListObjectsAsync(string bucketName)
         => ListObjectsAsync(bucketName, new ListObjectsOptions());
 
-    public unsafe Task<ObjectList> ListObjectsAsync(
-        string bucketName, ListObjectsOptions opts)
+    public async Task<ObjectList> ListObjectsAsync(string bucketName, ListObjectsOptions opts)
     {
-        var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
+        using var projectLease = _access.AcquireProjectLease();
+        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
         {
-            using var trace = _access.Trace("uplink_list_objects", ("bucket", bucketName), ("prefix", opts.Prefix ?? string.Empty));
-            try
-            {
-                var prefix  = Marshal.StringToCoTaskMemUTF8(opts.Prefix ?? string.Empty);
-                var cursor  = Marshal.StringToCoTaskMemUTF8(opts.Cursor ?? string.Empty);
-                var bucketPtr = Marshal.StringToCoTaskMemUTF8(bucketName);
-                try
-                {
-                    var nativeOpts = new UplinkInterop.UplinkListObjectsOptions
-                    {
-                        prefix    = prefix,
-                        cursor    = cursor,
-                        recursive = opts.Recursive,
-                        system    = opts.System,
-                        custom    = opts.Custom
-                    };
+            ["op"]          = "object_list",
+            ["project_id"]  = projectLease.Handle,
+            ["bucket"]      = bucketName,
+            ["prefix"]      = opts.Prefix ?? string.Empty,
+            ["cursor"]      = opts.Cursor ?? string.Empty,
+            ["recursive"]   = opts.Recursive,
+            ["system_meta"] = opts.System,
+            ["custom_meta"] = opts.Custom
+        }).ConfigureAwait(false);
 
-                    nint iterator = UplinkInterop.uplink_list_objects(
-                        projectLease.Handle, bucketPtr, &nativeOpts);
+        if (result.IsError)
+            throw new ObjectListException(result.ErrorMessage!);
 
-                    var list = new ObjectList();
-                    try
-                    {
-                        if (iterator == nint.Zero)
-                        {
-                            trace?.Fail("Native library returned a null object iterator without an error.");
-                            throw new ObjectListException("Native library returned a null object iterator without an error.");
-                        }
+        var list = new ObjectList();
+        if (result.Data.TryGetProperty("objects", out var objectsElem))
+        {
+            foreach (var o in objectsElem.EnumerateArray())
+                list.Items.Add(ParseStorjObject(o));
+        }
 
-                        while (UplinkInterop.uplink_object_iterator_next(iterator))
-                        {
-                            nint objPtr = UplinkInterop.uplink_object_iterator_item(iterator);
-                            list.Items.Add(UplinkInterop.MarshalObject(objPtr));
-                        }
-
-                        nint errPtr = UplinkInterop.uplink_object_iterator_err(iterator);
-                        if (errPtr != nint.Zero)
-                        {
-                            var (msg, code) = UplinkInterop.ConsumeError(errPtr);
-                            trace?.NativeError(msg, code);
-                            throw new ObjectListException(msg);
-                        }
-
-                        trace?.Success();
-                    }
-                    finally
-                    {
-                        UplinkInterop.uplink_free_object_iterator(iterator);
-                    }
-
-                    return list;
-                }
-                finally
-                {
-                    Marshal.FreeCoTaskMem(prefix);
-                    Marshal.FreeCoTaskMem(cursor);
-                    Marshal.FreeCoTaskMem(bucketPtr);
-                }
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
+        return list;
     }
 
     // ── Stat ──────────────────────────────────────────────────────────────────
 
-    public Task<StorjObject> GetObjectAsync(string bucketName, string key)
+    public async Task<StorjObject> GetObjectAsync(string bucketName, string key)
     {
-        var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
+        using var projectLease = _access.AcquireProjectLease();
+        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
         {
-            using var trace = _access.Trace("uplink_stat_object", ("bucket", bucketName), ("key", key));
-            try
-            {
-                var result = UplinkInterop.uplink_stat_object(projectLease.Handle, bucketName, key);
-                try
-                {
-                    if (result.error != nint.Zero)
-                    {
-                        var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                        trace?.NativeError(msg, code);
-                        throw new ObjectNotFoundException(key, msg);
-                    }
+            ["op"]         = "object_stat",
+            ["project_id"] = projectLease.Handle,
+            ["bucket"]     = bucketName,
+            ["key"]        = key
+        }).ConfigureAwait(false);
 
-                    if (result.object_ == nint.Zero)
-                    {
-                        trace?.Fail("Native library returned a null object result without an error.");
-                        throw new ObjectNotFoundException(key, "Native library returned a null object result without an error.");
-                    }
+        if (result.IsError)
+            throw new ObjectNotFoundException(key, result.ErrorMessage!);
 
-                    trace?.Success();
-                    return UplinkInterop.MarshalObject(result.object_);
-                }
-                finally
-                {
-                    UplinkInterop.uplink_free_object_result(result);
-                }
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
+        return ParseStorjObject(result.Data);
     }
 
-    public Task<DownloadStream> GetObjectAsStream(
-        string bucketName,
-        string key)
+    public Task<DownloadStream> GetObjectAsStream(string bucketName, string key)
         => GetObjectAsStream(bucketName, key, new DownloadOptions());
 
-    public Task<DownloadStream> GetObjectAsStream(
-        string bucketName,
-        string key,
-        DownloadOptions downloadOptions)
+    public async Task<DownloadStream> GetObjectAsStream(
+        string bucketName, string key, DownloadOptions downloadOptions)
     {
         var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
+        try
         {
-            var handle = nint.Zero;
-            var leaseTransferred = false;
-            try
+            var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
             {
-                handle = OpenDownloadHandle(projectLease.Handle, bucketName, key, downloadOptions);
-                var length = GetDownloadLength(handle, downloadOptions, bucketName, key);
-                var stream = new DownloadStream(handle, length, projectLease, _access);
-                leaseTransferred = true;
-                handle = nint.Zero;
-                return stream;
-            }
-            finally
-            {
-                if (handle != nint.Zero)
-                    UplinkInterop.FreeDownloadHandle(handle);
+                ["op"]         = "download_begin",
+                ["project_id"] = projectLease.Handle,
+                ["bucket"]     = bucketName,
+                ["key"]        = key,
+                ["offset"]     = downloadOptions.Offset,
+                ["length"]     = downloadOptions.Length
+            }).ConfigureAwait(false);
 
-                if (!leaseTransferred)
-                    projectLease.Dispose();
+            if (result.IsError)
+            {
+                projectLease.Dispose();
+                throw new ObjectNotFoundException(key, result.ErrorMessage!);
             }
-        });
+
+            long downloadId = result.Data.GetProperty("download_id").GetInt64();
+            long totalBytes = result.Data.GetProperty("total_bytes").GetInt64();
+
+            return new DownloadStream(downloadId, totalBytes, projectLease, _access);
+        }
+        catch
+        {
+            projectLease.Dispose();
+            throw;
+        }
     }
 
     // ── Download ──────────────────────────────────────────────────────────────
@@ -300,266 +232,104 @@ public class ObjectService : IObjectService
         string bucketName, string key,
         DownloadOptions downloadOptions, bool startImmediately)
     {
-        var op = new DownloadOperation(
-            _access, bucketName, key, downloadOptions);
-
+        var op = new DownloadOperation(_access, bucketName, key, downloadOptions);
         if (startImmediately)
             op.StartDownloadAsync();
-
         return Task.FromResult(op);
     }
 
-    public Task<StorjObject> CopyObjectAsync(
-        string sourceBucketName,
-        string sourceKey,
-        string destinationBucketName,
-        string destinationKey)
+    public async Task<StorjObject> CopyObjectAsync(
+        string sourceBucketName, string sourceKey,
+        string destinationBucketName, string destinationKey)
     {
-        var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
+        using var projectLease = _access.AcquireProjectLease();
+        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
         {
-            using var trace = _access.Trace(
-                "uplink_copy_object",
-                ("sourceBucket", sourceBucketName),
-                ("sourceKey", sourceKey),
-                ("destinationBucket", destinationBucketName),
-                ("destinationKey", destinationKey));
-            try
-            {
-                var result = UplinkInterop.uplink_copy_object(
-                    projectLease.Handle,
-                    sourceBucketName,
-                    sourceKey,
-                    destinationBucketName,
-                    destinationKey,
-                    nint.Zero);
+            ["op"]         = "object_copy",
+            ["project_id"] = projectLease.Handle,
+            ["src_bucket"] = sourceBucketName,
+            ["src_key"]    = sourceKey,
+            ["dst_bucket"] = destinationBucketName,
+            ["dst_key"]    = destinationKey
+        }).ConfigureAwait(false);
 
-                try
-                {
-                    if (result.error != nint.Zero)
-                    {
-                        var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                        trace?.NativeError(msg, code);
-                        throw new IOException($"Failed to copy Storj object: {msg}");
-                    }
+        if (result.IsError)
+            throw new IOException($"Failed to copy Storj object: {result.ErrorMessage}");
 
-                    if (result.object_ == nint.Zero)
-                    {
-                        trace?.Fail("Native library returned a null copied object result without an error.");
-                        throw new IOException("Failed to copy Storj object: native library returned a null object result without an error.");
-                    }
-
-                    trace?.Success();
-                    return UplinkInterop.MarshalObject(result.object_);
-                }
-                finally
-                {
-                    UplinkInterop.uplink_free_object_result(result);
-                }
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
+        return ParseStorjObject(result.Data);
     }
 
-    public Task MoveObjectAsync(
-        string sourceBucketName,
-        string sourceKey,
-        string destinationBucketName,
-        string destinationKey)
+    public async Task MoveObjectAsync(
+        string sourceBucketName, string sourceKey,
+        string destinationBucketName, string destinationKey)
     {
-        var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
+        using var projectLease = _access.AcquireProjectLease();
+        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
         {
-            using var trace = _access.Trace(
-                "uplink_move_object",
-                ("sourceBucket", sourceBucketName),
-                ("sourceKey", sourceKey),
-                ("destinationBucket", destinationBucketName),
-                ("destinationKey", destinationKey));
-            try
-            {
-                var errPtr = UplinkInterop.uplink_move_object(
-                    projectLease.Handle,
-                    sourceBucketName,
-                    sourceKey,
-                    destinationBucketName,
-                    destinationKey,
-                    nint.Zero);
+            ["op"]         = "object_move",
+            ["project_id"] = projectLease.Handle,
+            ["src_bucket"] = sourceBucketName,
+            ["src_key"]    = sourceKey,
+            ["dst_bucket"] = destinationBucketName,
+            ["dst_key"]    = destinationKey
+        }).ConfigureAwait(false);
 
-                if (errPtr != nint.Zero)
-                {
-                    var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref errPtr);
-                    trace?.NativeError(msg, code);
-                    throw new IOException($"Failed to move Storj object: {msg}");
-                }
-
-                trace?.Success();
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
+        if (result.IsError)
+            throw new IOException($"Failed to move Storj object: {result.ErrorMessage}");
     }
 
     // ── Delete ────────────────────────────────────────────────────────────────
 
-    public Task DeleteObjectAsync(string bucketName, string key)
+    public async Task DeleteObjectAsync(string bucketName, string key)
     {
-        var projectLease = _access.AcquireProjectLease();
-        return Task.Run(() =>
+        using var projectLease = _access.AcquireProjectLease();
+        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
         {
-            using var trace = _access.Trace("uplink_delete_object", ("bucket", bucketName), ("key", key));
-            try
-            {
-                var result = UplinkInterop.uplink_delete_object(projectLease.Handle, bucketName, key);
-                try
-                {
-                    if (result.error != nint.Zero)
-                    {
-                        var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-                        trace?.NativeError(msg, code);
-                        throw new ObjectNotFoundException(key, msg);
-                    }
+            ["op"]         = "object_delete",
+            ["project_id"] = projectLease.Handle,
+            ["bucket"]     = bucketName,
+            ["key"]        = key
+        }).ConfigureAwait(false);
 
-                    trace?.Success();
-                }
-                finally
-                {
-                    UplinkInterop.uplink_free_object_result(result);
-                }
-            }
-            finally
-            {
-                projectLease.Dispose();
-            }
-        });
+        if (result.IsError)
+            throw new ObjectNotFoundException(key, result.ErrorMessage!);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private static unsafe void SetCustomMetadataNative(
-        nint uploadHandle, CustomMetadata metadata, NativeCallTrace? trace = null)
+    private static StorjObject ParseStorjObject(System.Text.Json.JsonElement e)
     {
-        var entries = metadata.Entries
-            .Select(kv => new UplinkInterop.UplinkCustomMetadataEntry
-            {
-                key          = Marshal.StringToCoTaskMemUTF8(kv.Key),
-                key_length   = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Key),
-                value        = Marshal.StringToCoTaskMemUTF8(kv.Value),
-                value_length = (nuint)System.Text.Encoding.UTF8.GetByteCount(kv.Value)
-            })
-            .ToArray();
-
-        fixed (UplinkInterop.UplinkCustomMetadataEntry* entriesPtr = entries)
+        var obj = new StorjObject
         {
-            var nativeMeta = new UplinkInterop.UplinkCustomMetadata
-            {
-                entries = (nint)entriesPtr,
-                count   = (nuint)entries.Length
-            };
-            var errPtr = UplinkInterop.uplink_upload_set_custom_metadata(uploadHandle, nativeMeta);
-            if (errPtr != nint.Zero)
-            {
-                var (msg, code) = UplinkInterop.ConsumeError(errPtr);
-                trace?.NativeError(msg, code);
-                throw new IOException($"Failed to set custom metadata: {msg}");
-            }
-        }
-
-        foreach (var e in entries)
-        {
-            Marshal.FreeCoTaskMem(e.key);
-            Marshal.FreeCoTaskMem(e.value);
-        }
-    }
-
-    private unsafe nint OpenDownloadHandle(
-        nint projectHandle,
-        string bucketName,
-        string key,
-        DownloadOptions downloadOptions)
-    {
-        using var trace = _access.Trace("uplink_download_object", ("bucket", bucketName), ("key", key));
-        var opts = new UplinkInterop.UplinkDownloadOptions
-        {
-            offset = downloadOptions.Offset,
-            length = downloadOptions.Length
+            Key      = e.TryGetProperty("obj_key",       out var k)  ? k.GetString()  ?? string.Empty : string.Empty,
+            IsPrefix = e.TryGetProperty("obj_is_prefix", out var ip) && ip.GetBoolean()
         };
 
-        var result = UplinkInterop.uplink_download_object(
-            projectHandle,
-            bucketName,
-            key,
-            &opts);
+        var created       = e.TryGetProperty("obj_created",        out var c)  ? c.GetInt64()  : 0L;
+        var expires       = e.TryGetProperty("obj_expires",        out var ex) ? ex.GetInt64() : 0L;
+        var contentLength = e.TryGetProperty("obj_content_length", out var cl) ? cl.GetInt64() : 0L;
 
-        if (result.error != nint.Zero)
+        obj.SystemMetadata = new SystemMetadata
         {
-            var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref result.error);
-            trace?.NativeError(msg, code);
-            UplinkInterop.uplink_free_download_result(result);
-            throw new ObjectNotFoundException(key, msg);
-        }
+            Created       = created  == 0 ? DateTime.MinValue : DateTimeOffset.FromUnixTimeSeconds(created).UtcDateTime,
+            Expires       = expires  == 0 ? DateTime.MinValue : DateTimeOffset.FromUnixTimeSeconds(expires).UtcDateTime,
+            ContentLength = contentLength
+        };
 
-        if (result.download == nint.Zero)
+        if (e.TryGetProperty("obj_custom_metadata", out var cm) && cm.ValueKind == System.Text.Json.JsonValueKind.Array)
         {
-            trace?.Fail("Native library returned a null download handle without an error.");
-            UplinkInterop.uplink_free_download_result(result);
-            throw new IOException("Failed to open Storj download stream: native library returned a null download handle without an error.");
-        }
-
-        trace?.Success();
-        return result.download;
-    }
-
-    private long GetDownloadLength(
-        nint downloadHandle,
-        DownloadOptions downloadOptions,
-        string bucketName,
-        string key)
-    {
-        using var trace = _access.Trace("uplink_download_info", ("bucket", bucketName), ("key", key));
-        var infoResult = UplinkInterop.uplink_download_info(downloadHandle);
-        try
-        {
-            if (infoResult.error != nint.Zero)
+            var meta = new CustomMetadata();
+            foreach (var entry in cm.EnumerateArray())
             {
-                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref infoResult.error);
-                trace?.NativeError(msg, code);
-                throw new IOException($"Failed to inspect Storj download stream: {msg}");
+                var entryKey   = entry.TryGetProperty("key",   out var ek) ? ek.GetString() ?? string.Empty : string.Empty;
+                var entryValue = entry.TryGetProperty("value", out var ev) ? ev.GetString() ?? string.Empty : string.Empty;
+                if (!string.IsNullOrEmpty(entryKey))
+                    meta.Entries[entryKey] = entryValue;
             }
-
-            if (infoResult.object_ == nint.Zero)
-            {
-                trace?.Success("Native library returned no object metadata; falling back to unknown length.");
-                return 0;
-            }
-
-            var contentLength = UplinkInterop.MarshalObject(infoResult.object_).ContentLength;
-            trace?.Success();
-            return CalculateDownloadLength(contentLength, downloadOptions);
+            if (meta.Entries.Count > 0)
+                obj.CustomMetadata = meta;
         }
-        finally
-        {
-            UplinkInterop.uplink_free_object_result(infoResult);
-        }
-    }
 
-    private static long CalculateDownloadLength(
-        long contentLength,
-        DownloadOptions downloadOptions)
-    {
-        var offset = Math.Max(0, downloadOptions.Offset);
-        if (contentLength <= offset)
-            return 0;
-
-        var remainingLength = contentLength - offset;
-        if (downloadOptions.Length < 0)
-            return remainingLength;
-
-        return Math.Min(remainingLength, downloadOptions.Length);
+        return obj;
     }
 }

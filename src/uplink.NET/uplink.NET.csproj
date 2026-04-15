@@ -36,4 +36,42 @@
       <_Parameter2>$(StorjUplinkVersion)</_Parameter2>
     </AssemblyAttribute>
   </ItemGroup>
+  <!-- Reference the worker project so it is built before this library. -->
+  <ItemGroup>
+    <ProjectReference Include="..\uplink.NET.Worker\uplink.NET.Worker.csproj"
+                      ReferenceOutputAssembly="false"
+                      SkipGetTargetFrameworkProperties="true" />
+  </ItemGroup>
+  <!--
+    Hook into GetCopyToOutputDirectoryItems so that the worker output files are
+    propagated into ANY project that references uplink.NET (including the test project).
+    The ProjectReference above guarantees the worker is already built by the time
+    this target runs, so the Exists() conditions will be satisfied.
+
+    The .dll is added directly to _SourceItemsToCopyToOutputDirectory rather than via
+    Content/None items because MSBuild filters out .dll files that match a referenced
+    project's assembly output when processing content items.  The json files do not
+    trigger that filter so they can use None items.
+  -->
+  <Target Name="_AddWorkerFilesToContent" BeforeTargets="GetCopyToOutputDirectoryItems">
+    <ItemGroup>
+      <!-- Direct injection into the output-copy list bypasses assembly-exclusion filter -->
+      <_SourceItemsToCopyToOutputDirectory
+          Include="$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.dll"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.dll')">
+        <TargetPath>uplink.NET.Worker.dll</TargetPath>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </_SourceItemsToCopyToOutputDirectory>
+      <None Include="$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.runtimeconfig.json"
+            CopyToOutputDirectory="PreserveNewest"
+            Pack="false"
+            Link="uplink.NET.Worker.runtimeconfig.json"
+            Condition="Exists('$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.runtimeconfig.json')" />
+      <None Include="$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.deps.json"
+            CopyToOutputDirectory="PreserveNewest"
+            Pack="false"
+            Link="uplink.NET.Worker.deps.json"
+            Condition="Exists('$(MSBuildThisFileDirectory)..\uplink.NET.Worker\bin\$(Configuration)\net10.0\uplink.NET.Worker.deps.json')" />
+    </ItemGroup>
+  </Target>
 </Project>
