@@ -946,6 +946,11 @@ internal sealed class OperationDispatcher
         }
 
         var partHandle = partResult.part_upload;
+        // Zero out the handle in the result struct BEFORE freeing it, so that
+        // uplink_free_part_upload_result does not free the handle we are about
+        // to use.  Not doing this causes a double-free / use-after-free crash
+        // in the Go runtime (same pattern as UploadBegin / DownloadBegin).
+        partResult.part_upload = nint.Zero;
         UplinkInterop.uplink_free_part_upload_result(partResult);
 
         if (partHandle == nint.Zero)
