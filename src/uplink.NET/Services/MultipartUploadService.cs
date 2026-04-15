@@ -8,6 +8,8 @@ namespace uplink.NET.Services;
 
 public class MultipartUploadService : IMultipartUploadService
 {
+    private const int ChunkMaxBytes = 80 * 1024;
+
     private readonly Access _access;
 
     public MultipartUploadService(Access access)
@@ -94,27 +96,65 @@ public class MultipartUploadService : IMultipartUploadService
         uint partNumber, byte[] partBytes)
     {
         using var projectLease = _access.AcquireProjectLease();
-        var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
-        {
-            ["op"]            = "multipart_upload_part",
-            ["project_id"]    = projectLease.Handle,
-            ["bucket"]        = bucketName,
-            ["key"]           = objectKey,
-            ["upload_id_str"] = uploadId,
-            ["part_number"]   = (long)partNumber,
-            ["data_b64"]      = partBytes.Length > 0 ? Convert.ToBase64String(partBytes) : string.Empty
-        }).ConfigureAwait(false);
-
         var uploadResult = new PartUploadResult();
-        if (result.IsError)
+
+        long totalWritten = 0;
+        if (partBytes.Length == 0)
         {
-            uploadResult.Error = result.ErrorMessage ?? "Unknown error";
+            var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+            {
+                ["op"]            = "multipart_upload_part",
+                ["project_id"]    = projectLease.Handle,
+                ["bucket"]        = bucketName,
+                ["key"]           = objectKey,
+                ["upload_id_str"] = uploadId,
+                ["part_number"]   = (long)partNumber,
+                ["data_b64"]      = string.Empty
+            }).ConfigureAwait(false);
+
+            if (result.IsError)
+            {
+                uploadResult.Error = result.ErrorMessage ?? "Unknown error";
+                return uploadResult;
+            }
         }
         else
         {
-            uploadResult.BytesWritten = (uint)(result.Data.TryGetProperty("bytes_written", out var bw) ? bw.GetInt64() : 0L);
+            for (int offset = 0; offset < partBytes.Length; offset += ChunkMaxBytes)
+            {
+                int count = Math.Min(ChunkMaxBytes, partBytes.Length - offset);
+                var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+                {
+                    ["op"]            = "multipart_upload_part",
+                    ["project_id"]    = projectLease.Handle,
+                    ["bucket"]        = bucketName,
+                    ["key"]           = objectKey,
+                    ["upload_id_str"] = uploadId,
+                    ["part_number"]   = (long)partNumber,
+                    ["data_b64"]      = Convert.ToBase64String(partBytes, offset, count)
+                }).ConfigureAwait(false);
+
+                if (result.IsError)
+                {
+                    uploadResult.Error = result.ErrorMessage ?? "Unknown error";
+                    return uploadResult;
+                }
+
+                var bytesWritten = result.Data.TryGetProperty("bytes_written", out var bw)
+                    ? bw.GetInt64()
+                    : 0L;
+
+                if (bytesWritten != count)
+                {
+                    uploadResult.Error = $"Multipart upload write mismatch at offset {offset}: wrote {bytesWritten} bytes, expected {count}.";
+                    return uploadResult;
+                }
+
+                totalWritten += bytesWritten;
+            }
         }
 
+        uploadResult.BytesWritten = (uint)totalWritten;
         return uploadResult;
     }
 
