@@ -1072,6 +1072,7 @@ internal sealed class OperationDispatcher
             return beginResult;
 
         long partUploadId = Convert.ToInt64(beginResult["part_upload_id"], System.Globalization.CultureInfo.InvariantCulture);
+        bool completed = false;
 
         try
         {
@@ -1094,15 +1095,19 @@ internal sealed class OperationDispatcher
             if (commitResult.TryGetValue("err", out _))
                 return commitResult;
 
+            completed = true;
             return writeResult;
         }
         finally
         {
-            var abortReq = JsonSerializer.SerializeToElement(new Dictionary<string, object?>
+            if (!completed)
             {
-                ["part_upload_id"] = partUploadId
-            });
-            MultipartPartAbort(abortReq);
+                var abortReq = JsonSerializer.SerializeToElement(new Dictionary<string, object?>
+                {
+                    ["part_upload_id"] = partUploadId
+                });
+                MultipartPartAbort(abortReq);
+            }
         }
     }
 
