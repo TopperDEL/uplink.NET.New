@@ -143,7 +143,8 @@ public class UploadOperation : IDisposable
                     if (bytesWritten != count)
                     {
                         await AbortUploadAsync(uploadId).ConfigureAwait(false);
-                        SetFailed($"Upload write wrote {bytesWritten} bytes, expected {count}.");
+                        SetFailed(
+                            $"Upload write mismatch at offset {offset}: wrote {bytesWritten} bytes, expected {count}.");
                         return;
                     }
 
