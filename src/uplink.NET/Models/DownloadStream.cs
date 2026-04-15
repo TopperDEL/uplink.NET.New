@@ -7,6 +7,9 @@ namespace uplink.NET.Models;
 /// </summary>
 public class DownloadStream : Stream
 {
+    private const int MaxConsecutiveEmptyReads = 8;
+    private static readonly TimeSpan EmptyReadRetryDelay = TimeSpan.FromMilliseconds(10);
+
     private readonly object _syncRoot = new();
     private readonly Access _access;
 
@@ -84,21 +87,42 @@ public class DownloadStream : Stream
             if (_endOfStream)
                 return 0;
 
-            var (data, eof, error) = ReadChunkFromWorker(_downloadId, buffer.Length);
-            if (error != null)
-                throw new IOException($"Failed to read from Storj download stream: {error}");
-
-            int bytesRead = data?.Length ?? 0;
-            if (bytesRead > 0)
+            var consecutiveEmptyReads = 0;
+            while (true)
             {
-                data!.AsSpan(0, Math.Min(bytesRead, buffer.Length)).CopyTo(buffer);
-                _position += bytesRead;
+                var (data, eof, error) = ReadChunkFromWorker(_downloadId, buffer.Length);
+                if (error != null)
+                    throw new IOException($"Failed to read from Storj download stream: {error}");
+
+                int bytesRead = data?.Length ?? 0;
+                if (bytesRead > 0)
+                {
+                    data!.AsSpan(0, Math.Min(bytesRead, buffer.Length)).CopyTo(buffer);
+                    _position += bytesRead;
+                    return bytesRead;
+                }
+
+                if (eof || _position >= _length)
+                {
+                    _endOfStream = true;
+                    return 0;
+                }
+
+                consecutiveEmptyReads++;
+                if (consecutiveEmptyReads >= MaxConsecutiveEmptyReads)
+                    throw new IOException("Storj download stream stalled after repeated empty reads before EOF.");
+
+                Monitor.Exit(_syncRoot);
+                try
+                {
+                    Thread.Sleep(EmptyReadRetryDelay);
+                }
+                finally
+                {
+                    Monitor.Enter(_syncRoot);
+                    ThrowIfDisposed();
+                }
             }
-
-            if (eof || bytesRead == 0)
-                _endOfStream = true;
-
-            return bytesRead;
         }
     }
 
@@ -191,7 +215,7 @@ public class DownloadStream : Stream
             if (bytesRead > 0 && !string.IsNullOrEmpty(dataB64))
                 return (Convert.FromBase64String(dataB64), eof, null);
 
-            return (Array.Empty<byte>(), eof || bytesRead == 0, null);
+            return (Array.Empty<byte>(), eof, null);
         }
         catch (Exception ex)
         {

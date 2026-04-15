@@ -791,9 +791,6 @@ internal sealed class OperationDispatcher
                 eof = true;
             }
 
-            if (bytesRead == 0 && !eof)
-                eof = true;
-
             var dataB64 = bytesRead > 0 ? Convert.ToBase64String(buf, 0, bytesRead) : string.Empty;
             return Ok(new() { ["data_b64"] = dataB64, ["bytes_read"] = bytesRead, ["eof"] = eof });
         }

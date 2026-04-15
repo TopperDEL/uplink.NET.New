@@ -12,6 +12,8 @@ public delegate void DownloadOperationEnded(DownloadOperation downloadOperation)
 public class DownloadOperation : IDisposable
 {
     private const int ChunkSizeBytes = 80 * 1024;
+    private const int MaxConsecutiveEmptyReads = 8;
+    private static readonly TimeSpan EmptyReadRetryDelay = TimeSpan.FromMilliseconds(10);
 
     private readonly Access _access;
     private readonly string _bucketName;
@@ -102,6 +104,7 @@ public class DownloadOperation : IDisposable
             try
             {
                 using var ms = new MemoryStream();
+                var consecutiveEmptyReads = 0;
 
                 while (!_cancelRequested)
                 {
@@ -127,12 +130,25 @@ public class DownloadOperation : IDisposable
                         var chunk = Convert.FromBase64String(dataB64);
                         ms.Write(chunk, 0, bytesRead);
                         BytesReceived += bytesRead;
+                        consecutiveEmptyReads = 0;
                         DownloadOperationProgressChanged?.Invoke(this);
                         await Task.Yield();
                     }
 
-                    if (eof || bytesRead == 0)
+                    if (eof || (TotalBytes >= 0 && BytesReceived >= TotalBytes))
                         break;
+
+                    if (bytesRead == 0)
+                    {
+                        consecutiveEmptyReads++;
+                        if (consecutiveEmptyReads >= MaxConsecutiveEmptyReads)
+                        {
+                            SetFailed("Download stalled after repeated empty reads before reaching EOF.");
+                            return;
+                        }
+
+                        await Task.Delay(EmptyReadRetryDelay).ConfigureAwait(false);
+                    }
                 }
 
                 if (_cancelRequested)
