@@ -11,7 +11,7 @@ public delegate void DownloadOperationEnded(DownloadOperation downloadOperation)
 /// </summary>
 public class DownloadOperation : IDisposable
 {
-    private const int ChunkMaxBytes = 80 * 1024;
+    private const int ChunkSizeBytes = 80 * 1024;
 
     private readonly Access _access;
     private readonly string _bucketName;
@@ -109,7 +109,7 @@ public class DownloadOperation : IDisposable
                     {
                         ["op"]          = "download_read",
                         ["download_id"] = downloadId,
-                        ["max_bytes"]   = ChunkMaxBytes
+                        ["max_bytes"]   = ChunkSizeBytes
                     }).ConfigureAwait(false);
 
                     if (readResult.IsError)

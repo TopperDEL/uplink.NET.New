@@ -8,7 +8,7 @@ namespace uplink.NET.Services;
 
 public class MultipartUploadService : IMultipartUploadService
 {
-    private const int ChunkMaxBytes = 80 * 1024;
+    private const int ChunkSizeBytes = 80 * 1024;
 
     private readonly Access _access;
 
@@ -120,9 +120,9 @@ public class MultipartUploadService : IMultipartUploadService
         }
         else
         {
-            for (int offset = 0; offset < partBytes.Length; offset += ChunkMaxBytes)
+            for (int offset = 0; offset < partBytes.Length; offset += ChunkSizeBytes)
             {
-                int count = Math.Min(ChunkMaxBytes, partBytes.Length - offset);
+                int count = Math.Min(ChunkSizeBytes, partBytes.Length - offset);
                 var result = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
                 {
                     ["op"]            = "multipart_upload_part",

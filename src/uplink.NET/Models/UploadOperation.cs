@@ -12,7 +12,7 @@ public delegate void UploadOperationEnded(UploadOperation uploadOperation);
 /// </summary>
 public class UploadOperation : IDisposable
 {
-    private const int ChunkMaxBytes = 80 * 1024;
+    private const int ChunkSizeBytes = 80 * 1024;
 
     private readonly Access _access;
     private readonly string _bucketName;
@@ -119,9 +119,9 @@ public class UploadOperation : IDisposable
             // giant base64 request to the worker process.
             if (_data.Length > 0)
             {
-                for (int offset = 0; offset < _data.Length; offset += ChunkMaxBytes)
+                for (int offset = 0; offset < _data.Length; offset += ChunkSizeBytes)
                 {
-                    int count = Math.Min(ChunkMaxBytes, _data.Length - offset);
+                    int count = Math.Min(ChunkSizeBytes, _data.Length - offset);
                     var writeResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
                     {
                         ["op"]        = "upload_write",
