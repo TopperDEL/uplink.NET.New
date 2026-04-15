@@ -12,6 +12,8 @@ public delegate void UploadOperationEnded(UploadOperation uploadOperation);
 /// </summary>
 public class UploadOperation : IDisposable
 {
+    private const int ChunkMaxBytes = 80 * 1024;
+
     private readonly Access _access;
     private readonly string _bucketName;
     private readonly byte[] _data;
@@ -113,26 +115,51 @@ public class UploadOperation : IDisposable
                 return;
             }
 
-            // Write data (send all at once)
+            // Write data in IPC-sized chunks so large uploads do not send a single
+            // giant base64 request to the worker process.
             if (_data.Length > 0)
             {
-                var writeResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+                for (int offset = 0; offset < _data.Length; offset += ChunkMaxBytes)
                 {
-                    ["op"]        = "upload_write",
-                    ["upload_id"] = uploadId,
-                    ["data_b64"]  = Convert.ToBase64String(_data)
-                }).ConfigureAwait(false);
+                    int count = Math.Min(ChunkMaxBytes, _data.Length - offset);
+                    var writeResult = await NativeWorkerProcess.Instance.SendAsync(new Dictionary<string, object?>
+                    {
+                        ["op"]        = "upload_write",
+                        ["upload_id"] = uploadId,
+                        ["data_b64"]  = Convert.ToBase64String(_data, offset, count)
+                    }).ConfigureAwait(false);
 
-                if (writeResult.IsError)
-                {
-                    await AbortUploadAsync(uploadId).ConfigureAwait(false);
-                    SetFailed(writeResult.ErrorMessage!);
-                    return;
+                    if (writeResult.IsError)
+                    {
+                        await AbortUploadAsync(uploadId).ConfigureAwait(false);
+                        SetFailed(writeResult.ErrorMessage!);
+                        return;
+                    }
+
+                    var bytesWritten = writeResult.Data.TryGetProperty("bytes_written", out var bw)
+                        ? bw.GetInt64()
+                        : 0L;
+
+                    if (bytesWritten != count)
+                    {
+                        await AbortUploadAsync(uploadId).ConfigureAwait(false);
+                        SetFailed($"Upload write wrote {bytesWritten} bytes, expected {count}.");
+                        return;
+                    }
+
+                    BytesSent += bytesWritten;
+                    UploadOperationProgressChanged?.Invoke(this);
+
+                    if (_cancelRequested)
+                    {
+                        await AbortUploadAsync(uploadId).ConfigureAwait(false);
+                        Cancelled = true;
+                        Running   = false;
+                        UploadOperationEnded?.Invoke(this);
+                        return;
+                    }
                 }
             }
-
-            BytesSent = _data.Length;
-            UploadOperationProgressChanged?.Invoke(this);
 
             // Set custom metadata if needed
             if (_customMetadata?.Entries.Count > 0)

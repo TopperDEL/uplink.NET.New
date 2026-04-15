@@ -575,35 +575,49 @@ internal sealed class OperationDispatcher
 
         var data = Convert.FromBase64String(dataB64);
 
-        UplinkInterop.UplinkWriteResult writeResult;
-        var gcHandle = System.Runtime.InteropServices.GCHandle.Alloc(data, System.Runtime.InteropServices.GCHandleType.Pinned);
-        try
+        long totalWritten = 0;
+        const int chunkSize = 80 * 1024;
+        int offset = 0;
+        while (offset < data.Length)
         {
-            unsafe
+            int toWrite = Math.Min(chunkSize, data.Length - offset);
+            UplinkInterop.UplinkWriteResult writeResult;
+            var gcHandle = System.Runtime.InteropServices.GCHandle.Alloc(data, System.Runtime.InteropServices.GCHandleType.Pinned);
+            try
             {
-                var ptr = (void*)gcHandle.AddrOfPinnedObject();
-                writeResult = UplinkInterop.uplink_upload_write(handle, ptr, (nuint)data.Length);
+                unsafe
+                {
+                    var ptr = (void*)(gcHandle.AddrOfPinnedObject() + offset);
+                    writeResult = UplinkInterop.uplink_upload_write(handle, ptr, (nuint)toWrite);
+                }
             }
-        }
-        finally
-        {
-            gcHandle.Free();
-        }
-
-        try
-        {
-            if (writeResult.error != nint.Zero)
+            finally
             {
-                var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
-                return Error(msg, code);
+                gcHandle.Free();
             }
 
-            return Ok(new() { ["bytes_written"] = (long)(nuint)writeResult.bytes_written });
+            try
+            {
+                if (writeResult.error != nint.Zero)
+                {
+                    var (msg, code) = UplinkInterop.ConsumeErrorAndClear(ref writeResult.error);
+                    return Error(msg, code);
+                }
+
+                int written = (int)(nuint)writeResult.bytes_written;
+                if (written == 0)
+                    return Error("Upload write stalled: 0 bytes written.", -1);
+
+                totalWritten += written;
+                offset += written;
+            }
+            finally
+            {
+                UplinkInterop.uplink_free_write_result(writeResult);
+            }
         }
-        finally
-        {
-            UplinkInterop.uplink_free_write_result(writeResult);
-        }
+
+        return Ok(new() { ["bytes_written"] = totalWritten });
     }
 
     private unsafe Dictionary<string, object?> UploadSetMetadata(JsonElement req)
